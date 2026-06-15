@@ -1,0 +1,54 @@
+// Unit tests for stateToSrc — four-state mapping + unknown fallback.
+// Compatible with `bun test` (Bun built-in) and `node --test` (node:test).
+import { stateToSrc } from './avatar.js';
+
+// Detect runner: bun vs node:test
+const isBun = typeof Bun !== 'undefined';
+
+if (isBun) {
+  const { describe, it, expect } = await import('bun:test');
+
+  describe('stateToSrc', () => {
+    it('maps idle to /assets/idle.png', () => {
+      expect(stateToSrc('idle')).toBe('/assets/idle.png');
+    });
+    it('maps speaking to /assets/speaking.png', () => {
+      expect(stateToSrc('speaking')).toBe('/assets/speaking.png');
+    });
+    it('maps listening to /assets/listening.png', () => {
+      expect(stateToSrc('listening')).toBe('/assets/listening.png');
+    });
+    it('maps thinking to /assets/thinking.png', () => {
+      expect(stateToSrc('thinking')).toBe('/assets/thinking.png');
+    });
+    it('returns fallback/idle for unknown state', () => {
+      expect(stateToSrc('unknown')).toBe('/assets/idle.png');
+      expect(stateToSrc('')).toBe('/assets/idle.png');
+      expect(stateToSrc(undefined)).toBe('/assets/idle.png');
+    });
+  });
+} else {
+  // node:test path
+  const { describe, it } = await import('node:test');
+  const assert = await import('node:assert/strict');
+
+  describe('stateToSrc', () => {
+    it('maps idle to /assets/idle.png', () => {
+      assert.default.strictEqual(stateToSrc('idle'), '/assets/idle.png');
+    });
+    it('maps speaking to /assets/speaking.png', () => {
+      assert.default.strictEqual(stateToSrc('speaking'), '/assets/speaking.png');
+    });
+    it('maps listening to /assets/listening.png', () => {
+      assert.default.strictEqual(stateToSrc('listening'), '/assets/listening.png');
+    });
+    it('maps thinking to /assets/thinking.png', () => {
+      assert.default.strictEqual(stateToSrc('thinking'), '/assets/thinking.png');
+    });
+    it('returns fallback/idle for unknown/default/invalid state', () => {
+      assert.default.strictEqual(stateToSrc('unknown'), '/assets/idle.png');
+      assert.default.strictEqual(stateToSrc(''), '/assets/idle.png');
+      assert.default.strictEqual(stateToSrc(undefined), '/assets/idle.png');
+    });
+  });
+}
