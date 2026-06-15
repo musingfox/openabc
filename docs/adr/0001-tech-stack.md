@@ -25,7 +25,7 @@ openabc 是 openab 的原生互動 UI gateway,後端以 Rust + axum 0.8 / tokio 
 - **Canvas / WebGL 動畫方案(Three.js / PixiJS + HTML overlay)**
   - 取捨:avatar 3D/2D 動畫原生支援,GPU 加速,幀率穩定;需維護渲染管線,學習曲線陡,純文字對話 UI 仍需 HTML 層疊加。
 
-綜合「低資源 + 生動」目標:選 **Svelte**。Svelte 無執行時框架、bundle 最小、DOM 更新直接編譯為命令式操作;avatar 動畫層以 PixiJS Canvas 嵌入 Svelte 元件,分離關注點且不增加不必要的依賴。WebAssembly 路線保留為後續考量,待 wasm 生態成熟度與 bundle 最佳化提升後可遷移。
+綜合「低資源 + 生動」目標:選 **Svelte**。Svelte 無執行時框架、bundle 最小、DOM 更新直接編譯為命令式操作;avatar 本輪以 sprite/圖片狀態實作,由 Svelte 元件直接切換 `<img>` src,不引入額外畫布 runtime。WebAssembly 路線保留為後續考量,待 wasm 生態成熟度與 bundle 最佳化提升後可遷移。
 
 ---
 
@@ -44,10 +44,14 @@ openabc 是 openab 的原生互動 UI gateway,後端以 Rust + axum 0.8 / tokio 
 
 ### Avatar 動畫格式
 
-- **Lottie(JSON 向量動畫)**
-  - 取捨:設計師友好、體積小(典型 < 200 KB)、CPU 渲染,幀率受限於 JS 執行緒;適合 idle/情緒等靜態輪播動畫。
-- **WebGL Spine / DragonBones**
-  - 取捨:骨骼動畫 GPU 加速,可做即時姿態混合;runtime 授權與體積較大(Spine runtime ~500 KB)。
+三類候選,依最終選定(sprite/圖片狀態)→ 已評估替代 → 未來升級路徑排列:
+
+- **sprite/圖片狀態(選定)**
+  - 取捨:以一組靜態圖片(WebP/PNG)代表人物不同狀態,runtime 為純 DOM `<img>` 切換或 CSS background-position,無額外 JS runtime、零 WebGL context 開銷;實作最簡單,資源耗用最低。代價是無法做骨骼插值或連續幀動畫,情緒表達粒度較粗。適合早期 RPG 式呈現,本輪選定。
+- **Lottie(JSON 向量動畫)(已評估替代方案,未來升級路徑)**
+  - 取捨:設計師友好、體積小(典型 < 200 KB JSON)、CPU 渲染,可做情緒插值與關鍵幀動畫;幀率受限於 JS 執行緒,需引入 lottie-web (~70 KB) runtime。適合呈現細膩表情動畫,待動畫需求提升時可替換 sprite。
+- **PixiJS/Spine 骨骼動畫(已評估替代方案,未來升級路徑)**
+  - 取捨:骨骼動畫 GPU 加速、即時姿態混合;PixiJS runtime ~280 KB + Spine runtime ~500 KB,需 WebGL context(~20-40 MB GPU texture)。適合高生動度 avatar,待硬體需求明確且動畫需求複雜化後引入。
 
 ### 語音
 
@@ -71,10 +75,9 @@ openabc 是 openab 的原生互動 UI gateway,後端以 Rust + axum 0.8 / tokio 
 
 | 選定技術 | 量測軸 | 相對評估 |
 |---|---|---|
-| Svelte(前端框架) | binary size(bundle) | ~30-60 KB gzip,無執行時;vs React ~140 KB |
-| PixiJS(Canvas 動畫) | RAM | WebGL context ~20-40 MB GPU texture;vs Three.js 場景圖開銷更高 |
-| WebSocket(傳輸) | latency | 首幀延遲 < 5 ms(本機);bandwidth 開銷每 frame header 2-14 bytes(vs HTTP 1-2 KB headers/req) |
-| Lottie(avatar 動畫) | CPU | 單動畫 < 5% CPU(M 系列);vs Spine WebGL < 2% GPU 但需 runtime 授權 |
+| Svelte(前端框架) | bundle gzip 體積 | 15 KB gzip(spike 實測);vs React ~140 KB;無執行時 |
+| sprite/圖片狀態(avatar) | bundle 額外體積 / RAM | 僅 WebP 圖片,無 JS runtime 額外開銷;向量動畫替代方案需 +70 KB runtime,骨骼動畫替代方案需 +280 KB 以上 |
+| WebSocket(傳輸) | latency | 首幀延遲 < 5 ms(本機);frame header 2-14 bytes(vs HTTP 1-2 KB headers/req) |
 | Opus(語音) | bandwidth | 24 kbps 語音品質可接受;MP3 64-128 kbps 同品質 |
 | WebP/AVIF(圖片) | binary size | AVIF 比 JPEG 小 ~50%;WebP 比 PNG 小 ~25-35% |
 
@@ -84,7 +87,7 @@ Rust 後端(axum + tokio):非同步零成本抽象,典型 idle RSS < 10 MB,binar
 
 ## 選定
 
-- 前端渲染層:Svelte(web 瀏覽器,搭配 PixiJS Canvas 處理 avatar 動畫)
+- 前端渲染層:Svelte(web 瀏覽器,avatar 由 Svelte 元件直接切換 `<img>` sprite)
 - 後端傳輸:WebSocket(axum 0.8 內建,tokio-tungstenite;WebRTC 列為即時語音後續選項)
-- 媒體編解碼:Lottie(avatar)+ Opus(語音)+ WebP/AVIF(圖片)
-- 資源耗用評估:Svelte bundle < 60 KB / WebSocket frame overhead < 14 bytes / Opus 24 kbps / 後端 idle RSS < 10 MB
+- 媒體編解碼:sprite/圖片狀態(avatar,純 DOM `<img>`/CSS,無額外 runtime)+ Opus(語音)+ WebP/AVIF(圖片)
+- 資源耗用評估:Svelte bundle 15 KB gzip(spike 實測)/ WebSocket frame overhead < 14 bytes / Opus 24 kbps / 後端 idle RSS < 10 MB
