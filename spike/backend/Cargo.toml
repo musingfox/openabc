@@ -1,10 +1,14 @@
 [package]
-name = "spike-ws-echo"
+name = "openabc-ws-spike"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "openabc_ws_spike"
+path = "src/lib.rs"
+
 [[bin]]
-name = "spike-ws-echo"
+name = "openabc-ws-spike"
 path = "src/main.rs"
 
 [dependencies]

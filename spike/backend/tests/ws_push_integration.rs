@@ -3,7 +3,7 @@
 // E2: >=2 frames received with >=2 distinct state values (client sends nothing).
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::WebSocketUpgrade,
         State,
     },
     response::Response,
@@ -11,6 +11,7 @@ use axum::{
     Router,
 };
 use futures_util::StreamExt;
+use openabc_ws_spike::{handle_socket, CYCLE_MS};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -22,37 +23,6 @@ struct AppState;
 
 async fn ws_handler_test(ws: WebSocketUpgrade, State(_): State<Arc<AppState>>) -> Response {
     ws.on_upgrade(handle_socket)
-}
-
-async fn handle_socket(mut socket: WebSocket) {
-    let states = ["idle", "speaking", "listening", "thinking"];
-    let mut idx = 0usize;
-
-    let msg = format!(r#"{{"type":"state","state":"{}"}}"#, states[idx]);
-    if socket.send(Message::Text(msg.into())).await.is_err() {
-        return;
-    }
-
-    let mut ticker = tokio::time::interval(Duration::from_millis(800));
-    ticker.tick().await;
-
-    loop {
-        tokio::select! {
-            _ = ticker.tick() => {
-                idx = (idx + 1) % states.len();
-                let msg = format!(r#"{{"type":"state","state":"{}"}}"#, states[idx]);
-                if socket.send(Message::Text(msg.into())).await.is_err() {
-                    break;
-                }
-            }
-            msg = socket.recv() => {
-                match msg {
-                    Some(Ok(Message::Close(_))) | None => break,
-                    _ => {}
-                }
-            }
-        }
-    }
 }
 
 #[tokio::test]
@@ -83,7 +53,8 @@ async fn test_backend_proactively_pushes_state_events() {
 
     let mut received_states: Vec<String> = Vec::new();
 
-    // Collect frames for up to 3 seconds; stop early once we have >=2 distinct.
+    // Collect frames; wait up to CYCLE_MS*3 ms for >=2 distinct frames.
+    let wait_ms = CYCLE_MS * 3;
     let collect = async {
         while let Some(Ok(msg)) = ws_stream.next().await {
             if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
@@ -102,7 +73,7 @@ async fn test_backend_proactively_pushes_state_events() {
         }
     };
 
-    timeout(Duration::from_secs(3), collect)
+    timeout(Duration::from_millis(wait_ms + 2000), collect)
         .await
         .expect("timed out waiting for state events");
 
