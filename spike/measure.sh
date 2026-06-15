@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# spike/measure.sh — reproducible measurements for gate-turn-2 Example E/F.
+# spike/measure.sh — reproducible measurements for the spike.
 # Run from spike/ (gate does: cd "$SPIKE" && bash measure.sh).
 # Idempotent: deletes measurements.json before regenerating.
 set -euo pipefail
@@ -59,12 +59,10 @@ fi
 kill "$BPID" 2>/dev/null || true
 wait "$BPID" 2>/dev/null || true
 
-# ── 3. first_frame_ms: proxy via Node.js timing a fetch of dist/index.html ──
-# True headless browser not required; we use the time to receive the first byte
-# of index.html from a local static server (a reproducible proxy for "something
-# rendered appears").  Starts a one-shot node http server, times the request.
-echo "[measure] measuring first_frame_ms..."
-FIRST_FRAME_MS="$(node - <<'EOF'
+# ── 3. index_html_ttfb_ms: HTTP TTFB for index.html served from local static server ──
+# Measures HTTP time-to-first-byte (TTFB) of index.html from a local static server.
+echo "[measure] measuring index_html_ttfb_ms..."
+INDEX_HTML_TTFB_MS="$(node - <<'EOF'
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');
@@ -98,9 +96,9 @@ cat > measurements.json <<ENDJSON
 {
   "bundle_gzip_bytes": $BUNDLE_GZIP,
   "idle_rss_bytes": $IDLE_RSS,
-  "first_frame_ms": $FIRST_FRAME_MS
+  "index_html_ttfb_ms": $INDEX_HTML_TTFB_MS
 }
 ENDJSON
 
-echo "[measure] done: bundle_gzip_bytes=$BUNDLE_GZIP idle_rss_bytes=$IDLE_RSS first_frame_ms=$FIRST_FRAME_MS"
+echo "[measure] done: bundle_gzip_bytes=$BUNDLE_GZIP idle_rss_bytes=$IDLE_RSS index_html_ttfb_ms=$INDEX_HTML_TTFB_MS"
 echo "[measure] written: measurements.json"

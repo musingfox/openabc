@@ -75,13 +75,13 @@ openabc 是 openab 的原生互動 UI gateway,後端以 Rust + axum 0.8 / tokio 
 
 | 選定技術 | 量測軸 | 相對評估 |
 |---|---|---|
-| Svelte(前端框架) | bundle gzip 體積 | 15 KB gzip(spike 實測);vs React ~140 KB;無執行時 |
-| sprite/圖片狀態(avatar) | bundle 額外體積 / RAM | 僅 WebP 圖片,無 JS runtime 額外開銷;向量動畫替代方案需 +70 KB runtime,骨骼動畫替代方案需 +280 KB 以上 |
-| WebSocket(傳輸) | latency | 首幀延遲 < 5 ms(本機);frame header 2-14 bytes(vs HTTP 1-2 KB headers/req) |
-| Opus(語音) | bandwidth | 24 kbps 語音品質可接受;MP3 64-128 kbps 同品質 |
-| WebP/AVIF(圖片) | binary size | AVIF 比 JPEG 小 ~50%;WebP 比 PNG 小 ~25-35% |
+| Svelte(前端框架) | bundle gzip 體積(JS+CSS) | 13 KB gzip(spike 實測)(實測);vs React ~140 KB(估計);無執行時 |
+| sprite/圖片狀態(avatar) | bundle 額外體積 / RAM | 僅 PNG/WebP 圖片,無 JS runtime 額外開銷(實測);向量動畫替代方案需 +70 KB runtime(估計),骨骼動畫替代方案需 +280 KB 以上(估計) |
+| WebSocket(傳輸) | index.html TTFB(本機) | < 5 ms(本機實測)(實測);frame header 2-14 bytes(vs HTTP 1-2 KB headers/req)(估計) |
+| Opus(語音) | bandwidth | 24 kbps 語音品質可接受(估計);MP3 64-128 kbps 同品質(估計) |
+| WebP/AVIF(圖片) | binary size | AVIF 比 JPEG 小 ~50%(估計);WebP 比 PNG 小 ~25-35%(估計) |
 
-Rust 後端(axum + tokio):非同步零成本抽象,典型 idle RSS < 10 MB,binary ~5-8 MB stripped。
+Rust 後端(axum + tokio):非同步零成本抽象,idle RSS 3 MB(spike 實測)(實測),binary ~5-8 MB stripped(估計)。
 
 ---
 
@@ -90,4 +90,4 @@ Rust 後端(axum + tokio):非同步零成本抽象,典型 idle RSS < 10 MB,binar
 - 前端渲染層:Svelte(web 瀏覽器,avatar 由 Svelte 元件直接切換 `<img>` sprite)
 - 後端傳輸:WebSocket(axum 0.8 內建,tokio-tungstenite;WebRTC 列為即時語音後續選項)
 - 媒體編解碼:sprite/圖片狀態(avatar,純 DOM `<img>`/CSS,無額外 runtime)+ Opus(語音)+ WebP/AVIF(圖片)
-- 資源耗用評估:Svelte bundle 15 KB gzip(spike 實測)/ WebSocket frame overhead < 14 bytes / Opus 24 kbps / 後端 idle RSS < 10 MB
+- 資源耗用評估:Svelte bundle 13 KB gzip(spike 實測)/ WebSocket frame overhead < 14 bytes / Opus 24 kbps / 後端 idle RSS 3 MB(spike 實測)
