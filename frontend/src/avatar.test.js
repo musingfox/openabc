@@ -290,6 +290,43 @@ if (isBun) {
       expect(shouldRenderRich(false)).toBe(false);
     });
   });
+
+  describe('renderRich XSS style policy (E-XSS-STYLE)', () => {
+    it('E-XSS-STYLE: $$\\frac{a}{b}$$ katex markup is present', () => {
+      expect(/class="katex/.test(renderRich('$$\\frac{a}{b}$$'))).toBe(true);
+    });
+    it('E-XSS-STYLE: katex layout style (height: or vertical-align:) survives', () => {
+      const out = renderRich('$$\\frac{a}{b}$$');
+      expect(/style="[^"]*(height:|vertical-align:)/.test(out)).toBe(true);
+    });
+    it('E-XSS-STYLE: CSS expression() in style is stripped', () => {
+      expect(/expression\(/i.test(renderRich('<p style="x:expression(alert(1))">a</p>'))).toBe(false);
+    });
+    it('E-XSS-STYLE: javascript: in style value is stripped', () => {
+      expect(/javascript:/i.test(renderRich('<div style="background:url(javascript:alert(1))">a</div>'))).toBe(false);
+    });
+  });
+
+  describe('renderRich XSS injection vectors (E-XSS-VECTORS)', () => {
+    it('E-XSS-VECTORS: onload= stripped', () => {
+      expect(/onload=/i.test(renderRich('<body onload=alert(1)>x</body>'))).toBe(false);
+    });
+    it('E-XSS-VECTORS: onclick= stripped', () => {
+      expect(/onclick=/i.test(renderRich('<button onclick=alert(1)>x</button>'))).toBe(false);
+    });
+    it('E-XSS-VECTORS: <iframe stripped', () => {
+      expect(/<iframe/i.test(renderRich('<iframe src=evil></iframe>'))).toBe(false);
+    });
+    it('E-XSS-VECTORS: svg onload stripped', () => {
+      expect(/<svg[^>]*onload/i.test(renderRich('<svg onload=alert(1)></svg>'))).toBe(false);
+    });
+    it('E-XSS-VECTORS: data:text/html href stripped', () => {
+      expect(/data:text\/html/i.test(renderRich('<a href="data:text/html,<script>x">y</a>'))).toBe(false);
+    });
+    it('E-XSS-VECTORS: href=data: stripped', () => {
+      expect(/href="data:/i.test(renderRich('<a href="data:application/x,y">z</a>'))).toBe(false);
+    });
+  });
 } else {
   // node:test path
   const { describe, it } = await import('node:test');
@@ -560,6 +597,43 @@ if (isBun) {
     });
     it('E-COEX: shouldRenderRich(false) === false', () => {
       assert.default.strictEqual(shouldRenderRich(false), false);
+    });
+  });
+
+  describe('renderRich XSS style policy (E-XSS-STYLE)', () => {
+    it('E-XSS-STYLE: $$\\frac{a}{b}$$ katex markup is present', () => {
+      assert.default.ok(/class="katex/.test(renderRich('$$\\frac{a}{b}$$')));
+    });
+    it('E-XSS-STYLE: katex layout style (height: or vertical-align:) survives', () => {
+      const out = renderRich('$$\\frac{a}{b}$$');
+      assert.default.ok(/style="[^"]*(height:|vertical-align:)/.test(out));
+    });
+    it('E-XSS-STYLE: CSS expression() in style is stripped', () => {
+      assert.default.ok(!/expression\(/i.test(renderRich('<p style="x:expression(alert(1))">a</p>')));
+    });
+    it('E-XSS-STYLE: javascript: in style value is stripped', () => {
+      assert.default.ok(!/javascript:/i.test(renderRich('<div style="background:url(javascript:alert(1))">a</div>')));
+    });
+  });
+
+  describe('renderRich XSS injection vectors (E-XSS-VECTORS)', () => {
+    it('E-XSS-VECTORS: onload= stripped', () => {
+      assert.default.ok(!/onload=/i.test(renderRich('<body onload=alert(1)>x</body>')));
+    });
+    it('E-XSS-VECTORS: onclick= stripped', () => {
+      assert.default.ok(!/onclick=/i.test(renderRich('<button onclick=alert(1)>x</button>')));
+    });
+    it('E-XSS-VECTORS: <iframe stripped', () => {
+      assert.default.ok(!/<iframe/i.test(renderRich('<iframe src=evil></iframe>')));
+    });
+    it('E-XSS-VECTORS: svg onload stripped', () => {
+      assert.default.ok(!/<svg[^>]*onload/i.test(renderRich('<svg onload=alert(1)></svg>')));
+    });
+    it('E-XSS-VECTORS: data:text/html href stripped', () => {
+      assert.default.ok(!/data:text\/html/i.test(renderRich('<a href="data:text/html,<script>x">y</a>')));
+    });
+    it('E-XSS-VECTORS: href=data: stripped', () => {
+      assert.default.ok(!/href="data:/i.test(renderRich('<a href="data:application/x,y">z</a>')));
     });
   });
 }

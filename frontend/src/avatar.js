@@ -174,13 +174,74 @@ export function renderRich(text) {
   // Step 3: restore KaTeX placeholders
   html = html.replace(/\x02KATEX(\d+)\x03/g, (_, i) => placeholders[Number(i)] ?? '');
 
-  // Step 4: sanitize — allow math/katex markup but strip XSS vectors
-  const clean = DOMPurify.sanitize(html, {
+  // Step 4: sanitize — allow math/katex markup but strip XSS vectors.
+  //
+  // Style policy: KaTeX injects layout-critical style attributes (height,
+  // vertical-align, etc.) that must survive. A blanket ADD_ATTR:['style'] is
+  // too broad — it admits CSS injection like expression() or javascript: URLs.
+  // Instead we hook uponSanitizeAttribute and enforce a CSS property allowlist,
+  // then block any value containing expression(, javascript:, or url(.
+  //
+  // Allowed CSS properties: the subset KaTeX layout needs + common safe layout props.
+  const SAFE_CSS_PROPS = new Set([
+    'height', 'min-height', 'max-height',
+    'width', 'min-width', 'max-width',
+    'vertical-align', 'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+    'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    'top', 'left', 'right', 'bottom',
+    'position', 'display',
+    'transform', 'transform-origin',
+    'font-size', 'line-height', 'letter-spacing',
+    'border-right-width', 'border-top-width',
+    'overflow', 'white-space',
+  ]);
+
+  // Danger patterns in CSS values — regardless of property name.
+  const DANGEROUS_CSS = /expression\s*\(|javascript\s*:/i;
+  // url( is dangerous (can load images/fonts from attacker-controlled URLs or encode JS)
+  const CSS_URL = /url\s*\(/i;
+
+  const purifyConfig = {
     ADD_TAGS: ['math', 'annotation', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub',
                'mfrac', 'msqrt', 'mover', 'munder', 'munderover', 'mtable', 'mtr', 'mtd',
                'mtext', 'mspace', 'mglyph'],
-    ADD_ATTR: ['xmlns', 'encoding', 'display', 'class', 'style', 'aria-hidden'],
+    ADD_ATTR: ['xmlns', 'encoding', 'display', 'class', 'aria-hidden'],
+    // Do NOT add 'style' globally — the hook below does fine-grained filtering.
+    FORCE_BODY: false,
+  };
+
+  // Add hook once per DOMPurify instance (isomorphic-dompurify is a singleton).
+  // We remove it after sanitize() to keep the module side-effect-free across calls.
+  const hook = DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+    if (data.attrName !== 'style') return;
+    const value = data.attrValue || '';
+    // Parse individual declarations and filter them.
+    const kept = value
+      .split(';')
+      .map(decl => decl.trim())
+      .filter(decl => {
+        if (!decl) return false;
+        const colon = decl.indexOf(':');
+        if (colon === -1) return false;
+        const prop = decl.slice(0, colon).trim().toLowerCase();
+        const val  = decl.slice(colon + 1).trim();
+        if (!SAFE_CSS_PROPS.has(prop)) return false;
+        if (DANGEROUS_CSS.test(val)) return false;
+        if (CSS_URL.test(val)) return false;
+        return true;
+      })
+      .join(';');
+
+    if (kept) {
+      data.attrValue = kept;
+    } else {
+      // Tell DOMPurify to drop the attribute entirely.
+      data.keepAttr = false;
+    }
   });
+
+  const clean = DOMPurify.sanitize(html, purifyConfig);
+  DOMPurify.removeHook('uponSanitizeAttribute');
 
   return clean;
 }
