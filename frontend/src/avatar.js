@@ -1,4 +1,28 @@
 /**
+ * Pure: reveal the first charsShown characters of full.
+ * charsShown <= 0 → ""; charsShown >= full.length → full (clamped).
+ *
+ * @param {string} full - the complete text
+ * @param {number} charsShown - how many chars to reveal
+ * @returns {string} partial or full text
+ */
+export function revealText(full, charsShown) {
+  if (charsShown <= 0) return '';
+  return full.slice(0, charsShown);
+}
+
+/**
+ * Pure: true when all characters of full have been revealed.
+ *
+ * @param {string} full - the complete text
+ * @param {number} charsShown - how many chars currently shown
+ * @returns {boolean}
+ */
+export function isRevealComplete(full, charsShown) {
+  return charsShown >= full.length;
+}
+
+/**
  * Pure mapping from agent state string to sprite asset path.
  * Unknown / unrecognised states fall back to the idle sprite.
  */

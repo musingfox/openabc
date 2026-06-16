@@ -1,6 +1,6 @@
-// Unit tests for stateToSrc and replyToState.
+// Unit tests for stateToSrc, replyToState, revealText, isRevealComplete.
 // Compatible with `bun test` (Bun built-in) and `node --test` (node:test).
-import { stateToSrc, replyToState, reduceMessages, nextBackoff } from './avatar.js';
+import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete } from './avatar.js';
 
 // Detect runner: bun vs node:test
 const isBun = typeof Bun !== 'undefined';
@@ -134,6 +134,59 @@ if (isBun) {
       expect(nextBackoff(NaN)).toBe(500);
     });
   });
+
+  describe('revealText', () => {
+    // E1: pure reveal function, char granularity
+    it('E1: charsShown=0 => empty string', () => {
+      expect(revealText('hello', 0)).toBe('');
+    });
+    it('E1: charsShown=3 => first 3 chars', () => {
+      expect(revealText('hello', 3)).toBe('hel');
+    });
+    it('E1: charsShown >= length => full text (clamped)', () => {
+      expect(revealText('hello', 99)).toBe('hello');
+    });
+    it('E1: charsShown=length => full text', () => {
+      expect(revealText('hello', 5)).toBe('hello');
+    });
+    it('E1: negative charsShown => empty string', () => {
+      expect(revealText('hello', -1)).toBe('');
+    });
+  });
+
+  describe('isRevealComplete', () => {
+    // E2: done predicate
+    it('E2: mid-reveal => false', () => {
+      expect(isRevealComplete('hello', 2)).toBe(false);
+    });
+    it('E2: exactly at length => true', () => {
+      expect(isRevealComplete('hello', 5)).toBe(true);
+    });
+    it('E2: past length => true', () => {
+      expect(isRevealComplete('hello', 99)).toBe(true);
+    });
+    it('E2: zero => false for non-empty', () => {
+      expect(isRevealComplete('hello', 0)).toBe(false);
+    });
+  });
+
+  describe('streaming-only-agent (E3)', () => {
+    // E3: you message is NOT marked for reveal — reduceMessages returns from:'you' unchanged
+    it('E3: you message appended without reveal flag', () => {
+      // reduceMessages only appends agent messages; you messages are added directly in App.svelte.
+      // Here we verify reduceMessages does NOT produce a you entry from WS push.
+      const msgs = [{ from: 'you', text: 'hello' }];
+      const result = reduceMessages(msgs, { type: 'message', text: 'reply' });
+      expect(result.length).toBe(2);
+      expect(result[0].from).toBe('you');
+      // you message has no reveal property
+      expect(result[0].reveal).toBeUndefined();
+    });
+    it('E3: agent message from WS has from=agent (streaming target)', () => {
+      const result = reduceMessages([], { type: 'message', text: 'agent text' });
+      expect(result[0].from).toBe('agent');
+    });
+  });
 } else {
   // node:test path
   const { describe, it } = await import('node:test');
@@ -259,6 +312,53 @@ if (isBun) {
     it('B4: negative / NaN => 500', () => {
       assert.default.strictEqual(nextBackoff(-5), 500);
       assert.default.strictEqual(nextBackoff(NaN), 500);
+    });
+  });
+
+  describe('revealText', () => {
+    it('E1: charsShown=0 => empty string', () => {
+      assert.default.strictEqual(revealText('hello', 0), '');
+    });
+    it('E1: charsShown=3 => first 3 chars', () => {
+      assert.default.strictEqual(revealText('hello', 3), 'hel');
+    });
+    it('E1: charsShown >= length => full text (clamped)', () => {
+      assert.default.strictEqual(revealText('hello', 99), 'hello');
+    });
+    it('E1: charsShown=length => full text', () => {
+      assert.default.strictEqual(revealText('hello', 5), 'hello');
+    });
+    it('E1: negative charsShown => empty string', () => {
+      assert.default.strictEqual(revealText('hello', -1), '');
+    });
+  });
+
+  describe('isRevealComplete', () => {
+    it('E2: mid-reveal => false', () => {
+      assert.default.strictEqual(isRevealComplete('hello', 2), false);
+    });
+    it('E2: exactly at length => true', () => {
+      assert.default.strictEqual(isRevealComplete('hello', 5), true);
+    });
+    it('E2: past length => true', () => {
+      assert.default.strictEqual(isRevealComplete('hello', 99), true);
+    });
+    it('E2: zero => false for non-empty', () => {
+      assert.default.strictEqual(isRevealComplete('hello', 0), false);
+    });
+  });
+
+  describe('streaming-only-agent (E3)', () => {
+    it('E3: you message has no reveal flag from reduceMessages', () => {
+      const msgs = [{ from: 'you', text: 'hello' }];
+      const result = reduceMessages(msgs, { type: 'message', text: 'reply' });
+      assert.default.strictEqual(result.length, 2);
+      assert.default.strictEqual(result[0].from, 'you');
+      assert.default.strictEqual(result[0].reveal, undefined);
+    });
+    it('E3: agent message from WS has from=agent (streaming target)', () => {
+      const result = reduceMessages([], { type: 'message', text: 'agent text' });
+      assert.default.strictEqual(result[0].from, 'agent');
     });
   });
 }
