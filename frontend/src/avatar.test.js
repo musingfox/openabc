@@ -1,6 +1,6 @@
 // Unit tests for stateToSrc, replyToState, revealText, isRevealComplete.
 // Compatible with `bun test` (Bun built-in) and `node --test` (node:test).
-import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete } from './avatar.js';
+import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom } from './avatar.js';
 
 // Detect runner: bun vs node:test
 const isBun = typeof Bun !== 'undefined';
@@ -208,6 +208,21 @@ if (isBun) {
       const seg = new Intl.Segmenter('en', { granularity: 'grapheme' });
       const count = [...seg.segment('👨‍💻')].length;
       expect(count).toBe(1);
+    });
+  });
+
+  describe('scrollTopToBottom (E10)', () => {
+    it('E10: overflow case: scrollHeight=1000, clientHeight=200 => 800', () => {
+      expect(scrollTopToBottom({ scrollHeight: 1000, clientHeight: 200 })).toBe(800);
+    });
+    it('E10: non-overflow case: scrollHeight=50, clientHeight=200 => 0', () => {
+      expect(scrollTopToBottom({ scrollHeight: 50, clientHeight: 200 })).toBe(0);
+    });
+    it('E10: never negative: scrollHeight=0, clientHeight=200 => 0', () => {
+      expect(scrollTopToBottom({ scrollHeight: 0, clientHeight: 200 })).toBe(0);
+    });
+    it('E10: equal: scrollHeight=200, clientHeight=200 => 0', () => {
+      expect(scrollTopToBottom({ scrollHeight: 200, clientHeight: 200 })).toBe(0);
     });
   });
 
@@ -423,6 +438,21 @@ if (isBun) {
       const seg = new Intl.Segmenter('en', { granularity: 'grapheme' });
       const count = [...seg.segment('👨‍💻')].length;
       assert.default.strictEqual(count, 1);
+    });
+  });
+
+  describe('scrollTopToBottom (E10)', () => {
+    it('E10: overflow case: scrollHeight=1000, clientHeight=200 => 800', () => {
+      assert.default.strictEqual(scrollTopToBottom({ scrollHeight: 1000, clientHeight: 200 }), 800);
+    });
+    it('E10: non-overflow case: scrollHeight=50, clientHeight=200 => 0', () => {
+      assert.default.strictEqual(scrollTopToBottom({ scrollHeight: 50, clientHeight: 200 }), 0);
+    });
+    it('E10: never negative: scrollHeight=0, clientHeight=200 => 0', () => {
+      assert.default.strictEqual(scrollTopToBottom({ scrollHeight: 0, clientHeight: 200 }), 0);
+    });
+    it('E10: equal: scrollHeight=200, clientHeight=200 => 0', () => {
+      assert.default.strictEqual(scrollTopToBottom({ scrollHeight: 200, clientHeight: 200 }), 0);
     });
   });
 

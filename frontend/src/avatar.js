@@ -120,6 +120,17 @@ export function replyToState(reply) {
 }
 
 /**
+ * Pure: compute the scrollTop value that pins a scrollable container to its bottom.
+ * Uses Math.max(0, scrollHeight - clientHeight) so non-overflow containers return 0.
+ *
+ * @param {{scrollHeight: number, clientHeight: number}} opts
+ * @returns {number}
+ */
+export function scrollTopToBottom({ scrollHeight, clientHeight }) {
+  return Math.max(0, scrollHeight - clientHeight);
+}
+
+/**
  * Pure: reconnect backoff delay (ms) for a 0-based retry index.
  * Exponential from BASE, doubling per attempt, capped at MAX.
  * Negative / non-finite input is treated as attempt 0.

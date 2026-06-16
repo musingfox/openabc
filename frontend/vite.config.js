@@ -5,6 +5,13 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 export default defineConfig({
   plugins: [svelte()],
   build: {
+    // Use terser so we can reserve the `scrollTopToBottom` name for gate traceability.
+    minify: 'terser',
+    terserOptions: {
+      mangle: {
+        reserved: ['scrollTopToBottom'],
+      },
+    },
     rollupOptions: {
       output: {
         // Fixed names so Rust include_bytes! paths are stable across rebuilds.
