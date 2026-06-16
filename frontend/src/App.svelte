@@ -116,7 +116,7 @@
     <p class="conn {connStatus}">● {CONN_LABEL[connStatus]}</p>
   </div>
 
-  <ul id="messages" style="max-height:40vh;overflow-y:auto" data-scroll-fn="scrollTopToBottom">
+  <ul id="messages" style="max-height:40vh;overflow-y:auto">
     {#each messages as m, i}
       <li class={m.from}>
         <span class="label">{m.from}</span>
