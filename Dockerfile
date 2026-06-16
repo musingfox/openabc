@@ -14,6 +14,11 @@ COPY . .
 RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
+# curl is only for the container HEALTHCHECK (GET /health); --no-install-recommends
+# + apt list cleanup keep the runtime image lean.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /src/target/release/openabc /usr/local/bin/openabc
 # Bind all interfaces *inside* the container; the compose port mapping
 # (127.0.0.1:8137:8137) is what keeps it a localhost-only bridge on the host.
