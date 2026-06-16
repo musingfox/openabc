@@ -274,6 +274,62 @@ async fn e_r2_message_round_trips_with_no_op() {
     oab_ws.close(None).await.ok();
 }
 
+/// E4 — embedded-serve smoke: start the full server, GET /native, parse ALL
+/// /assets/* references from the served HTML, GET each one and assert 200.
+/// This is derived from what the HTML actually names — NOT a hardcoded list —
+/// so that any future orphan chunk (like turn17's 76 mermaid chunks) fails here
+/// rather than silently 404-ing in the browser.
+#[tokio::test]
+async fn e4_all_assets_referenced_by_native_html_are_served_200() {
+    let port = spawn_full_app().await;
+    let client = reqwest::Client::new();
+
+    // Step 1: GET /native and collect the HTML body.
+    let native_url = format!("http://127.0.0.1:{port}/native");
+    let resp = client.get(&native_url).send().await.expect("GET /native failed");
+    assert_eq!(resp.status(), 200, "GET /native must return 200");
+    let html = resp.text().await.expect("GET /native body must be text");
+
+    // Step 2: Extract all /assets/<file> references from the HTML.
+    // Scan for every occurrence of "/assets/" and collect the filename that follows,
+    // stopping at the first quote, whitespace, >, ?, or # character.
+    let mut refs_set = std::collections::HashSet::new();
+    let needle = "/assets/";
+    let mut search = html.as_str();
+    while let Some(idx) = search.find(needle) {
+        let after = &search[idx + needle.len()..];
+        let end = after
+            .find(|c: char| c == '"' || c == '\'' || c.is_whitespace() || c == '>' || c == '?' || c == '#')
+            .unwrap_or(after.len());
+        let name = &after[..end];
+        if !name.is_empty() {
+            refs_set.insert(name.to_string());
+        }
+        search = &search[idx + needle.len()..];
+    }
+    let refs: Vec<String> = refs_set.into_iter().collect();
+
+    assert!(
+        !refs.is_empty(),
+        "GET /native HTML must reference at least one /assets/* file"
+    );
+
+    // Step 3: GET each referenced asset and assert 200.
+    for asset_name in &refs {
+        let asset_url = format!("http://127.0.0.1:{port}/assets/{asset_name}");
+        let asset_resp = client
+            .get(&asset_url)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET /assets/{asset_name} failed: {e}"));
+        assert_eq!(
+            asset_resp.status(),
+            200,
+            "GET /assets/{asset_name} (referenced by /native HTML) must return 200, not 404"
+        );
+    }
+}
+
 /// E-LAG — a broadcast `Lagged` must NOT tear down the OAB `/ws` connection.
 /// Flood well past the 256-slot broadcast buffer WITHOUT draining the OAB side, so the
 /// send_task's next `recv()` observes `RecvError::Lagged`. A final sentinel event must

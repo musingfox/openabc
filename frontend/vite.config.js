@@ -10,7 +10,10 @@ export default defineConfig({
       output: {
         // Fixed names so Rust include_bytes! paths are stable across rebuilds.
         entryFileNames: 'assets/index.js',
-        chunkFileNames: 'assets/[name].js',
+        // inlineDynamicImports collapses all chunks (including mermaid's 76
+        // code-split chunks) into a single index.js. Required so native.rs's
+        // hardcoded asset whitelist remains sufficient.
+        inlineDynamicImports: true,
         assetFileNames: (assetInfo) => {
           // Keep sprite PNGs at predictable paths.
           if (assetInfo.name && assetInfo.name.endsWith('.png')) {
