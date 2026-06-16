@@ -1,0 +1,6 @@
+**/target/
+.git/
+.spiral/
+spike/
+frontend/node_modules/
+**/*.swp
