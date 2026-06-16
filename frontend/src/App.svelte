@@ -1,4 +1,6 @@
 <script>
+  import { onMount } from 'svelte';
+  import mermaid from 'mermaid';
   import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich } from './avatar.js';
 
   // Agent avatar state — driven by WebSocket push from openabc /native/ws.
@@ -78,6 +80,55 @@
   }
 
   connectWS();
+
+  // Initialise mermaid once at startup (browser-only; startOnLoad:false so we
+  // drive rendering manually from renderMermaidPending).
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+
+  /**
+   * Find all .mermaid-pending nodes that haven't been rendered yet, decode
+   * their data-mermaid base64 payload, and render them to SVG in place.
+   * Called after each reactive update that might have produced new rich HTML.
+   */
+  async function renderMermaidPending() {
+    const nodes = document.querySelectorAll('.mermaid-pending[data-mermaid]');
+    for (const node of nodes) {
+      // data-mermaid holds the base64-encoded, XSS-sanitized graph source.
+      const encoded = node.getAttribute('data-mermaid');
+      if (!encoded) continue;
+      let source;
+      try {
+        source = decodeURIComponent(escape(atob(encoded)));
+      } catch {
+        continue; // malformed base64 — skip
+      }
+      // Mark as rendered before the async call to prevent double-rendering.
+      node.removeAttribute('data-mermaid');
+      node.classList.remove('mermaid-pending');
+      try {
+        const id = 'mermaid-' + Math.random().toString(36).slice(2);
+        const { svg } = await mermaid.render(id, source);
+        node.innerHTML = svg;
+      } catch {
+        // Render failure (e.g., invalid diagram) — show plain text fallback.
+        node.textContent = source;
+      }
+    }
+  }
+
+  onMount(() => {
+    renderMermaidPending();
+  });
+
+  // Re-run after every reactive update in case new rich messages appeared.
+  $effect(() => {
+    // Touch the reactive dependencies we care about (messages + revealState)
+    // so Svelte re-runs this effect whenever they change.
+    const _ = messages;
+    const __ = revealState;
+    // Defer slightly so the DOM settles first.
+    Promise.resolve().then(renderMermaidPending);
+  });
 
   // Send the draft to the agent as an inbound {"text": ...} message.
   function send() {

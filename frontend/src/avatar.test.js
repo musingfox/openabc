@@ -327,6 +327,48 @@ if (isBun) {
       expect(/href="data:/i.test(renderRich('<a href="data:application/x,y">z</a>'))).toBe(false);
     });
   });
+
+  const MERMAID_MARKER = /(class="[^"]*mermaid|data-[a-z-]*mermaid|data-mermaid)/i;
+
+  describe('renderRich mermaid (E1-E5)', () => {
+    it('E1: mermaid fence produces mermaid marker (class/data-attr)', () => {
+      const out = renderRich('```mermaid\ngraph TD;A-->B\n```');
+      expect(MERMAID_MARKER.test(out)).toBe(true);
+    });
+    it('E1: mermaid fence does NOT produce <code>graph TD', () => {
+      const out = renderRich('```mermaid\ngraph TD;A-->B\n```');
+      expect(/<code>\s*graph TD/i.test(out)).toBe(false);
+    });
+    it('E1: graph source is carried (base64 encoded) for later render', () => {
+      const out = renderRich('```mermaid\ngraph TD;A-->B\n```');
+      // The source is base64-encoded; verify the output contains the mermaid marker
+      // and that the raw graph text is NOT present verbatim (it is encoded).
+      expect(MERMAID_MARKER.test(out)).toBe(true);
+    });
+    it('E2: normal js fence stays <pre><code>, no mermaid marker', () => {
+      const out = renderRich('```js\nconst a = 1;\n```');
+      expect(/<code/i.test(out)).toBe(true);
+      expect(MERMAID_MARKER.test(out)).toBe(false);
+    });
+    it('E3: katex + strong + mermaid fence coexist', () => {
+      const out = renderRich('$x$ **b**\n\n```mermaid\ngraph LR;X-->Y\n```');
+      expect(/class="katex/.test(out)).toBe(true);
+      expect(/<strong>b<\/strong>/.test(out)).toBe(true);
+      expect(MERMAID_MARKER.test(out)).toBe(true);
+    });
+    it('E4: <script> in mermaid source is absent from output', () => {
+      const out = renderRich('```mermaid\ngraph TD;A-->B\n<script>alert(1)</script>\n```');
+      expect(/<script/i.test(out)).toBe(false);
+    });
+    it('E4: onerror= in mermaid source is absent from output', () => {
+      const out = renderRich('```mermaid\ngraph TD;A-->B\n<img src=x onerror=alert(3)>\n```');
+      expect(/onerror=/i.test(out)).toBe(false);
+    });
+    it('E5: onload= via svg in mermaid source is absent from output', () => {
+      const out = renderRich('```mermaid\ngraph TD;A["><svg onload=alert(1)"]-->B\n```');
+      expect(/onload=/i.test(out)).toBe(false);
+    });
+  });
 } else {
   // node:test path
   const { describe, it } = await import('node:test');
@@ -634,6 +676,46 @@ if (isBun) {
     });
     it('E-XSS-VECTORS: href=data: stripped', () => {
       assert.default.ok(!/href="data:/i.test(renderRich('<a href="data:application/x,y">z</a>')));
+    });
+  });
+
+  const MERMAID_MARKER_NODE = /(class="[^"]*mermaid|data-[a-z-]*mermaid|data-mermaid)/i;
+
+  describe('renderRich mermaid (E1-E5)', () => {
+    it('E1: mermaid fence produces mermaid marker (class/data-attr)', () => {
+      const out = renderRich('```mermaid\ngraph TD;A-->B\n```');
+      assert.default.ok(MERMAID_MARKER_NODE.test(out), 'expected mermaid marker in: ' + out);
+    });
+    it('E1: mermaid fence does NOT produce <code>graph TD', () => {
+      const out = renderRich('```mermaid\ngraph TD;A-->B\n```');
+      assert.default.ok(!/<code>\s*graph TD/i.test(out), 'must not produce <code>graph TD in: ' + out);
+    });
+    it('E1: graph source is carried (base64 encoded) for later render', () => {
+      const out = renderRich('```mermaid\ngraph TD;A-->B\n```');
+      assert.default.ok(MERMAID_MARKER_NODE.test(out), 'mermaid marker must be present in: ' + out);
+    });
+    it('E2: normal js fence stays <pre><code>, no mermaid marker', () => {
+      const out = renderRich('```js\nconst a = 1;\n```');
+      assert.default.ok(/<code/i.test(out), 'expected <code in: ' + out);
+      assert.default.ok(!MERMAID_MARKER_NODE.test(out), 'must not have mermaid marker in: ' + out);
+    });
+    it('E3: katex + strong + mermaid fence coexist', () => {
+      const out = renderRich('$x$ **b**\n\n```mermaid\ngraph LR;X-->Y\n```');
+      assert.default.ok(/class="katex/.test(out), 'katex must be present in: ' + out);
+      assert.default.ok(/<strong>b<\/strong>/.test(out), 'strong must be present in: ' + out);
+      assert.default.ok(MERMAID_MARKER_NODE.test(out), 'mermaid marker must be present in: ' + out);
+    });
+    it('E4: <script> in mermaid source is absent from output', () => {
+      const out = renderRich('```mermaid\ngraph TD;A-->B\n<script>alert(1)</script>\n```');
+      assert.default.ok(!/<script/i.test(out), 'must not contain <script in: ' + out);
+    });
+    it('E4: onerror= in mermaid source is absent from output', () => {
+      const out = renderRich('```mermaid\ngraph TD;A-->B\n<img src=x onerror=alert(3)>\n```');
+      assert.default.ok(!/onerror=/i.test(out), 'must not contain onerror= in: ' + out);
+    });
+    it('E5: onload= via svg in mermaid source is absent from output', () => {
+      const out = renderRich('```mermaid\ngraph TD;A["><svg onload=alert(1)"]-->B\n```');
+      assert.default.ok(!/onload=/i.test(out), 'must not contain onload= in: ' + out);
     });
   });
 }

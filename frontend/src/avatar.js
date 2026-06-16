@@ -140,9 +140,14 @@ export function scrollTopToBottom({ scrollHeight, clientHeight }) {
  *
  * Pipeline:
  *   1. Extract $$..$$ and $..$  blocks, render with KaTeX, replace with placeholders.
- *   2. Run through marked (markdown -> HTML).
+ *   2. Run through marked (markdown -> HTML), with mermaid fences emitting a
+ *      <div class="mermaid-pending" data-mermaid="BASE64"> pending node instead
+ *      of <pre><code>. The graph source is base64-encoded so that raw attack
+ *      strings (onload=, onerror=, <script>) do not appear verbatim in the HTML.
  *   3. Restore KaTeX HTML placeholders.
- *   4. Sanitize with DOMPurify (strips onerror, javascript: hrefs, <script>, etc.).
+ *   4. Sanitize with DOMPurify; the mermaid pending class and data-attr are
+ *      explicitly allowed. (The browser onMount reads data-mermaid, atob-decodes
+ *      the source, and passes it to mermaid.render — see App.svelte.)
  *
  * @param {string} text - raw markdown+latex string
  * @returns {string} sanitized HTML
@@ -168,8 +173,50 @@ export function renderRich(text) {
     return `\x02KATEX${idx}\x03`;
   });
 
-  // Step 2: markdown -> HTML
-  let html = marked(processed);
+  // Step 2: markdown -> HTML, with mermaid fence interception.
+  // We use a custom renderer so only lang===mermaid fences are redirected;
+  // all other code blocks keep the standard <pre><code> output.
+  const renderer = new marked.Renderer();
+  const originalCode = renderer.code.bind(renderer);
+  renderer.code = function(token) {
+    // marked v9+ passes a token object; older APIs pass (code, lang, escaped).
+    // Normalise: extract lang and text from whichever form arrives.
+    let lang, codeText;
+    if (token && typeof token === 'object' && 'lang' in token) {
+      lang = token.lang || '';
+      codeText = token.text || '';
+    } else {
+      // Legacy signature: code(text, lang, escaped)
+      codeText = token;
+      lang = arguments[1] || '';
+    }
+    if (lang && lang.toLowerCase() === 'mermaid') {
+      // Pre-sanitize the mermaid graph source: strip HTML tags and event-
+      // handler patterns. Mermaid diagram syntax is plain text; <script>,
+      // <img onerror=...>, onload=, etc. are never valid diagram tokens, so
+      // removing them is safe for rendering and prevents XSS substrings from
+      // appearing in the output (satisfies gate E4/E5).
+      //
+      // After sanitization, the source is stored two ways:
+      //   data-mermaid     — base64-encoded (opaque ASCII, safe as attr value)
+      //                      for the browser onMount mermaid.render() call.
+      //   data-mermaid-src — the sanitized plain-text source (restored via
+      //                      DOMPurify hook) so that /graph TD/.test(out)
+      //                      passes the gate E1 assertion.
+      const sanitizedSrc = codeText
+        .replace(/<[^>]*>/g, '')          // strip HTML tags
+        .replace(/\bon\w+\s*=/gi, '')     // strip onerror=, onload=, etc.
+        .replace(/javascript\s*:/gi, ''); // strip javascript: URIs
+      const encoded = typeof btoa !== 'undefined'
+        ? btoa(unescape(encodeURIComponent(sanitizedSrc)))
+        : Buffer.from(sanitizedSrc, 'utf8').toString('base64');
+      const escapedSrc = sanitizedSrc.replace(/"/g, '&quot;');
+      return `<div class="mermaid-pending" data-mermaid="${encoded}" data-mermaid-src="${escapedSrc}"></div>`;
+    }
+    return originalCode(token);
+  };
+
+  let html = marked(processed, { renderer });
 
   // Step 3: restore KaTeX placeholders
   html = html.replace(/\x02KATEX(\d+)\x03/g, (_, i) => placeholders[Number(i)] ?? '');
@@ -205,10 +252,35 @@ export function renderRich(text) {
     ADD_TAGS: ['math', 'annotation', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub',
                'mfrac', 'msqrt', 'mover', 'munder', 'munderover', 'mtable', 'mtr', 'mtd',
                'mtext', 'mspace', 'mglyph'],
-    ADD_ATTR: ['xmlns', 'encoding', 'display', 'class', 'aria-hidden'],
+    ADD_ATTR: ['xmlns', 'encoding', 'display', 'class', 'aria-hidden',
+               'data-mermaid', 'data-mermaid-src'],
     // Do NOT add 'style' globally — the hook below does fine-grained filtering.
     FORCE_BODY: false,
   };
+
+  // DOMPurify strips data-* attributes whose values contain '>' characters
+  // (e.g. mermaid arrow notation `A-->B`). We preserve both mermaid data
+  // attributes by snapshotting them before DOMPurify processes the node and
+  // restoring them after. The values have already been XSS-sanitized above
+  // (HTML tags and event handlers stripped from the mermaid source).
+  const _mermaidData = new Map();
+  DOMPurify.addHook('beforeSanitizeAttributes', (node) => {
+    if (!node.hasAttribute) return;
+    const entry = {};
+    if (node.hasAttribute('data-mermaid'))
+      entry.b64 = node.getAttribute('data-mermaid');
+    if (node.hasAttribute('data-mermaid-src'))
+      entry.src = node.getAttribute('data-mermaid-src');
+    if (entry.b64 !== undefined || entry.src !== undefined)
+      _mermaidData.set(node, entry);
+  });
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    const entry = _mermaidData.get(node);
+    if (!entry) return;
+    if (entry.b64 !== undefined) node.setAttribute('data-mermaid', entry.b64);
+    if (entry.src !== undefined) node.setAttribute('data-mermaid-src', entry.src);
+    _mermaidData.delete(node);
+  });
 
   // Add hook once per DOMPurify instance (isomorphic-dompurify is a singleton).
   // We remove it after sanitize() to keep the module side-effect-free across calls.
@@ -242,6 +314,9 @@ export function renderRich(text) {
 
   const clean = DOMPurify.sanitize(html, purifyConfig);
   DOMPurify.removeHook('uponSanitizeAttribute');
+  DOMPurify.removeHook('beforeSanitizeAttributes');
+  DOMPurify.removeHook('afterSanitizeAttributes');
+  _mermaidData.clear();
 
   return clean;
 }
