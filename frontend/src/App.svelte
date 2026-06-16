@@ -3,6 +3,10 @@
 
   // Agent avatar state — driven by WebSocket push from openabc /native/ws.
   let agentState = $state('idle');
+  // Chat transcript: {from: 'you' | 'agent', text}.
+  let messages = $state([]);
+  // Current input draft.
+  let draft = $state('');
 
   const states = ['idle', 'speaking', 'listening', 'thinking'];
 
@@ -15,13 +19,30 @@
     ws.onmessage = (event) => {
       let obj = null;
       try { obj = JSON.parse(event.data); } catch { return; }
+      // The reply drives the avatar state (replyToState) and is shown as a message.
       agentState = replyToState(obj);
+      if (obj && obj.type === 'message' && typeof obj.text === 'string') {
+        messages = [...messages, { from: 'agent', text: obj.text }];
+      }
     };
     ws.onerror = () => { /* ignore */ };
     ws.onclose = () => { ws = null; };
   }
 
   connectWS();
+
+  // Send the draft to the agent as an inbound {"text": ...} message.
+  function send() {
+    const text = draft.trim();
+    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ text }));
+    messages = [...messages, { from: 'you', text }];
+    draft = '';
+  }
+
+  function onKey(e) {
+    if (e.key === 'Enter') send();
+  }
 
   // Sprite asset paths (referenced here for gate traceability; mapping lives in stateToSrc):
   // /assets/idle.png  /assets/speaking.png  /assets/listening.png  /assets/thinking.png
@@ -35,8 +56,28 @@
 
 <main>
   <h1>openabc agent avatar</h1>
-  <p>State: <strong>{agentState}</strong></p>
-  <img src={stateToSrc(agentState)} alt={agentState} width="64" height="64" />
-  <br />
-  <button onclick={nextState}>next state (fallback)</button>
+
+  <div class="avatar">
+    <img src={stateToSrc(agentState)} alt={agentState} width="64" height="64" />
+    <p>State: <strong>{agentState}</strong></p>
+  </div>
+
+  <ul id="messages">
+    {#each messages as m}
+      <li class={m.from}><strong>{m.from}:</strong> {m.text}</li>
+    {/each}
+  </ul>
+
+  <div class="composer">
+    <input
+      id="input"
+      type="text"
+      placeholder="輸入訊息…"
+      bind:value={draft}
+      onkeydown={onKey}
+    />
+    <button onclick={send}>送出</button>
+  </div>
+
+  <button class="fallback" onclick={nextState}>next state (fallback)</button>
 </main>
