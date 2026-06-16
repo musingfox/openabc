@@ -57,7 +57,31 @@ pub struct BrowserMessage {
 pub struct BrowserPush {
     #[serde(rename = "type")]
     pub msg_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub op: Option<String>,
     pub text: String,
+}
+
+/// Pure function: derive the BrowserPush value from a GatewayReply.
+/// This function is kept free of I/O so it can be unit-tested directly.
+pub fn reply_to_push(reply: &GatewayReply) -> BrowserPush {
+    match reply.command.as_deref() {
+        Some("add_reaction") => BrowserPush {
+            msg_type: "reaction".into(),
+            op: Some("add".into()),
+            text: reply.content.text.clone(),
+        },
+        Some("remove_reaction") => BrowserPush {
+            msg_type: "reaction".into(),
+            op: Some("remove".into()),
+            text: reply.content.text.clone(),
+        },
+        None | Some(_) => BrowserPush {
+            msg_type: "message".into(),
+            op: None,
+            text: reply.content.text.clone(),
+        },
+    }
 }
 
 // ─── HTTP GET /native — embedded sprite avatar UI ────────────────────────────
@@ -194,10 +218,7 @@ async fn handle_browser(
 /// `reply.channel.id` is the connection_id assigned at connect time.
 pub async fn dispatch_reply(senders: &NativeSenders, reply: &GatewayReply) {
     let conn_id = &reply.channel.id;
-    let push = BrowserPush {
-        msg_type: "message".into(),
-        text: reply.content.text.clone(),
-    };
+    let push = reply_to_push(reply);
     let json = match serde_json::to_string(&push) {
         Ok(j) => j,
         Err(e) => {
@@ -263,6 +284,67 @@ mod tests {
 
     fn build_router(senders: NativeSenders, event_tx: broadcast::Sender<String>) -> axum::Router {
         router().with_state(make_app_state(senders, event_tx))
+    }
+
+    fn make_reply(command: Option<&str>, text: &str) -> GatewayReply {
+        GatewayReply {
+            schema: "openab.gateway.reply.v1".into(),
+            reply_to: "evt_test".into(),
+            platform: "native".into(),
+            channel: crate::schema::ReplyChannel {
+                id: "conn_test".into(),
+                thread_id: None,
+            },
+            content: crate::schema::Content {
+                content_type: "text".into(),
+                text: text.into(),
+                attachments: vec![],
+            },
+            command: command.map(|s| s.to_string()),
+            request_id: None,
+            quote_message_id: None,
+        }
+    }
+
+    // R1: add_reaction -> type=reaction, op=add, text=emoji (JSON field assert)
+    #[test]
+    fn r1_add_reaction_pushes_reaction_add() {
+        let reply = make_reply(Some("add_reaction"), "👀");
+        let push = reply_to_push(&reply);
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&push).unwrap()).unwrap();
+        assert_eq!(v["type"], "reaction", "R1: type must be reaction");
+        assert_eq!(v["op"], "add", "R1: op must be add");
+        assert_eq!(v["text"], "👀", "R1: text must be the emoji");
+    }
+
+    // R2: None command -> type=message, text preserved
+    #[test]
+    fn r2_no_command_pushes_message() {
+        let reply = make_reply(None, "答案");
+        let push = reply_to_push(&reply);
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&push).unwrap()).unwrap();
+        assert_eq!(v["type"], "message", "R2: type must be message");
+        assert_eq!(v["text"], "答案", "R2: text must be preserved");
+        assert!(v.get("op").is_none() || v["op"].is_null(), "R2: op must be absent");
+    }
+
+    // R3: remove_reaction -> type=reaction, op=remove
+    #[test]
+    fn r3_remove_reaction_pushes_reaction_remove() {
+        let reply = make_reply(Some("remove_reaction"), "👀");
+        let push = reply_to_push(&reply);
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&push).unwrap()).unwrap();
+        assert_eq!(v["type"], "reaction", "R3: type must be reaction");
+        assert_eq!(v["op"], "remove", "R3: op must be remove");
+    }
+
+    // R4: edit_message (unknown command) -> no panic, fallback type=message
+    #[test]
+    fn r4_edit_message_fallback_no_panic() {
+        let reply = make_reply(Some("edit_message"), "edited text");
+        let push = reply_to_push(&reply);
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&push).unwrap()).unwrap();
+        assert_eq!(v["type"], "message", "R4: unknown command must fallback to message");
     }
 
     // Example 1: inbound text → GatewayEvent(platform=native, schema=openab.gateway.event.v1)

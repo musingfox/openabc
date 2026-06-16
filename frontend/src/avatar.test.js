@@ -44,6 +44,32 @@ if (isBun) {
     it('returns idle for empty object', () => {
       expect(replyToState({})).toBe('idle');
     });
+
+    // J1: emoji -> state mapping
+    it('J1: 👀 reaction -> listening', () => {
+      expect(replyToState({ type: 'reaction', text: '👀' })).toBe('listening');
+    });
+    it('J1: 🤔 reaction -> thinking', () => {
+      expect(replyToState({ type: 'reaction', text: '🤔' })).toBe('thinking');
+    });
+    it('J1: 🆗 reaction -> speaking', () => {
+      expect(replyToState({ type: 'reaction', text: '🆗' })).toBe('speaking');
+    });
+    it('J1: 💪 reaction -> speaking', () => {
+      expect(replyToState({ type: 'reaction', text: '💪' })).toBe('speaking');
+    });
+
+    // J2: unknown emoji -> idle
+    it('J2: unknown emoji reaction -> idle', () => {
+      expect(replyToState({ type: 'reaction', text: '🥱' })).toBe('idle');
+      expect(replyToState({ type: 'reaction', text: '😨' })).toBe('idle');
+      expect(replyToState({ type: 'reaction', text: '🔥' })).toBe('idle');
+    });
+
+    // J3: remove reaction -> idle
+    it('J3: reaction with op=remove -> idle', () => {
+      expect(replyToState({ type: 'reaction', op: 'remove', text: '👀' })).toBe('idle');
+    });
   });
 } else {
   // node:test path
@@ -85,6 +111,31 @@ if (isBun) {
     });
     it('returns idle for empty object', () => {
       assert.default.strictEqual(replyToState({}), 'idle');
+    });
+
+    // J1: emoji -> state mapping
+    it('J1: 👀 reaction -> listening', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '👀' }), 'listening');
+    });
+    it('J1: 🤔 reaction -> thinking', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '🤔' }), 'thinking');
+    });
+    it('J1: 🆗 reaction -> speaking', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '🆗' }), 'speaking');
+    });
+    it('J1: 💪 reaction -> speaking', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '💪' }), 'speaking');
+    });
+
+    // J2: unknown emoji -> idle
+    it('J2: unknown emoji reaction -> idle', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '🥱' }), 'idle');
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '😨' }), 'idle');
+    });
+
+    // J3: remove reaction -> idle
+    it('J3: reaction with op=remove -> idle', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', op: 'remove', text: '👀' }), 'idle');
     });
   });
 }

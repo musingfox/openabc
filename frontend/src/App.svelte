@@ -19,7 +19,7 @@
     ws.onmessage = (event) => {
       let obj = null;
       try { obj = JSON.parse(event.data); } catch { return; }
-      // The reply drives the avatar state (replyToState) and is shown as a message.
+      // reaction pushes drive avatar state only; they do NOT enter the message stream.
       agentState = replyToState(obj);
       if (obj && obj.type === 'message' && typeof obj.text === 'string') {
         messages = [...messages, { from: 'agent', text: obj.text }];

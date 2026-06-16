@@ -21,7 +21,19 @@ export function stateToSrc(state) {
 }
 
 /**
+ * Emoji-to-state mapping for reaction pushes.
+ */
+const EMOJI_STATE = {
+  '👀': 'listening',
+  '🤔': 'thinking',
+  '🆗': 'speaking',
+  '💪': 'speaking',
+};
+
+/**
  * Pure function: infer agent state from a gateway reply message.
+ * - reply with type "reaction" and op!=="remove": emoji -> state via EMOJI_STATE (unknown emoji -> 'idle')
+ * - reply with type "reaction" and op==="remove": 'idle'
  * - reply with type "message" => 'speaking'
  * - no reply / null / idle signal => 'idle'
  * - unknown / unrecognised => fallback 'idle'
@@ -31,6 +43,10 @@ export function stateToSrc(state) {
  */
 export function replyToState(reply) {
   if (!reply || typeof reply !== 'object') return 'idle';
+  if (reply.type === 'reaction') {
+    if (reply.op === 'remove') return 'idle';
+    return EMOJI_STATE[reply.text] ?? 'idle';
+  }
   if (reply.type === 'message') return 'speaking';
   return 'idle';
 }
