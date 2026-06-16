@@ -1,25 +1,47 @@
+// Module-level cached Intl.Segmenter singleton (grapheme granularity).
+const _segmenter = (typeof Intl !== 'undefined' && typeof Intl.Segmenter !== 'undefined')
+  ? new Intl.Segmenter('en', { granularity: 'grapheme' })
+  : null;
+
 /**
- * Pure: reveal the first charsShown characters of full.
- * charsShown <= 0 → ""; charsShown >= full.length → full (clamped).
+ * Split a string into an array of grapheme cluster strings.
+ * Falls back to Array.from (code-point level) when Intl.Segmenter is unavailable.
+ *
+ * @param {string} str
+ * @returns {string[]}
+ */
+function graphemes(str) {
+  if (_segmenter) {
+    return [..._segmenter.segment(str)].map(s => s.segment);
+  }
+  return Array.from(str);
+}
+
+/**
+ * Pure: reveal the first charsShown graphemes of full.
+ * charsShown <= 0 → ""; charsShown >= grapheme count → full (clamped).
+ * ASCII strings: grapheme count === char count, so existing assertions are unaffected.
  *
  * @param {string} full - the complete text
- * @param {number} charsShown - how many chars to reveal
+ * @param {number} charsShown - how many graphemes to reveal
  * @returns {string} partial or full text
  */
 export function revealText(full, charsShown) {
   if (charsShown <= 0) return '';
-  return full.slice(0, charsShown);
+  const gs = graphemes(full);
+  return gs.slice(0, charsShown).join('');
 }
 
 /**
- * Pure: true when all characters of full have been revealed.
+ * Pure: true when all graphemes of full have been revealed.
+ * ASCII strings: grapheme count === char count, so existing assertions are unaffected.
  *
  * @param {string} full - the complete text
- * @param {number} charsShown - how many chars currently shown
+ * @param {number} charsShown - how many graphemes currently shown
  * @returns {boolean}
  */
 export function isRevealComplete(full, charsShown) {
-  return charsShown >= full.length;
+  return charsShown >= graphemes(full).length;
 }
 
 /**

@@ -136,7 +136,7 @@ if (isBun) {
   });
 
   describe('revealText', () => {
-    // E1: pure reveal function, char granularity
+    // E1: pure reveal function, ASCII regression (grapheme === char for ASCII)
     it('E1: charsShown=0 => empty string', () => {
       expect(revealText('hello', 0)).toBe('');
     });
@@ -152,10 +152,33 @@ if (isBun) {
     it('E1: negative charsShown => empty string', () => {
       expect(revealText('hello', -1)).toBe('');
     });
+    // E1 grapheme-level: combining characters
+    it('E1 grapheme: "héllo",1 => "h"', () => {
+      expect(revealText('héllo', 1)).toBe('h');
+    });
+    it('E1 grapheme: "héllo",2 => "hé" (combining é = 1 grapheme)', () => {
+      expect(revealText('héllo', 2)).toBe('hé');
+    });
+    // E1 grapheme-level: CJK
+    it('E1 grapheme: "你好世界",2 => "你好"', () => {
+      expect(revealText('你好世界', 2)).toBe('你好');
+    });
+    // E5e: ZWJ cluster = 1 grapheme
+    it('E5e: revealText("a👨‍💻b",2) => "a👨‍💻" (ZWJ cluster=1 grapheme)', () => {
+      expect(revealText('a👨‍💻b', 2)).toBe('a👨‍💻');
+    });
+    it('E5e: no U+FFFD in any prefix of "a👨‍💻b"', () => {
+      const src = 'a👨‍💻b';
+      const seg = new Intl.Segmenter('en', { granularity: 'grapheme' });
+      const total = [...seg.segment(src)].length;
+      for (let n = 0; n <= total; n++) {
+        expect(revealText(src, n).includes('�')).toBe(false);
+      }
+    });
   });
 
   describe('isRevealComplete', () => {
-    // E2: done predicate
+    // E2: done predicate — ASCII regression
     it('E2: mid-reveal => false', () => {
       expect(isRevealComplete('hello', 2)).toBe(false);
     });
@@ -167,6 +190,24 @@ if (isBun) {
     });
     it('E2: zero => false for non-empty', () => {
       expect(isRevealComplete('hello', 0)).toBe(false);
+    });
+    // E2 grapheme granularity: "héllo" has 5 graphemes (é = combining = 1 grapheme)
+    it('E2 grapheme: isRevealComplete("héllo",2) => false', () => {
+      expect(isRevealComplete('héllo', 2)).toBe(false);
+    });
+    it('E2 grapheme: isRevealComplete("héllo",5) => true (5 graphemes)', () => {
+      expect(isRevealComplete('héllo', 5)).toBe(true);
+    });
+  });
+
+  describe('Intl.Segmenter (E7)', () => {
+    it('E7: Intl.Segmenter is available', () => {
+      expect(typeof Intl.Segmenter).toBe('function');
+    });
+    it('E7: segment("👨‍💻") count===1 (ZWJ cluster)', () => {
+      const seg = new Intl.Segmenter('en', { granularity: 'grapheme' });
+      const count = [...seg.segment('👨‍💻')].length;
+      expect(count).toBe(1);
     });
   });
 
@@ -331,6 +372,26 @@ if (isBun) {
     it('E1: negative charsShown => empty string', () => {
       assert.default.strictEqual(revealText('hello', -1), '');
     });
+    it('E1 grapheme: "héllo",1 => "h"', () => {
+      assert.default.strictEqual(revealText('héllo', 1), 'h');
+    });
+    it('E1 grapheme: "héllo",2 => "hé"', () => {
+      assert.default.strictEqual(revealText('héllo', 2), 'hé');
+    });
+    it('E1 grapheme: "你好世界",2 => "你好"', () => {
+      assert.default.strictEqual(revealText('你好世界', 2), '你好');
+    });
+    it('E5e: revealText("a👨‍💻b",2) => "a👨‍💻"', () => {
+      assert.default.strictEqual(revealText('a👨‍💻b', 2), 'a👨‍💻');
+    });
+    it('E5e: no U+FFFD in any prefix of "a👨‍💻b"', () => {
+      const src = 'a👨‍💻b';
+      const seg = new Intl.Segmenter('en', { granularity: 'grapheme' });
+      const total = [...seg.segment(src)].length;
+      for (let n = 0; n <= total; n++) {
+        assert.default.ok(!revealText(src, n).includes('�'), `prefix ${n} must not contain U+FFFD`);
+      }
+    });
   });
 
   describe('isRevealComplete', () => {
@@ -345,6 +406,23 @@ if (isBun) {
     });
     it('E2: zero => false for non-empty', () => {
       assert.default.strictEqual(isRevealComplete('hello', 0), false);
+    });
+    it('E2 grapheme: isRevealComplete("héllo",2) => false', () => {
+      assert.default.strictEqual(isRevealComplete('héllo', 2), false);
+    });
+    it('E2 grapheme: isRevealComplete("héllo",5) => true', () => {
+      assert.default.strictEqual(isRevealComplete('héllo', 5), true);
+    });
+  });
+
+  describe('Intl.Segmenter (E7)', () => {
+    it('E7: Intl.Segmenter is available', () => {
+      assert.default.strictEqual(typeof Intl.Segmenter, 'function');
+    });
+    it('E7: segment("👨‍💻") count===1', () => {
+      const seg = new Intl.Segmenter('en', { granularity: 'grapheme' });
+      const count = [...seg.segment('👨‍💻')].length;
+      assert.default.strictEqual(count, 1);
     });
   });
 

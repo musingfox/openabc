@@ -25,6 +25,11 @@
   // Active reveal timers: map from message index to timer id.
   let revealTimers = {};
 
+  function scrollMessagesToEnd() {
+    const el = document.getElementById('messages');
+    if (el) el.scrollTop = el.scrollHeight;
+  }
+
   function startReveal(idx, text) {
     if (revealTimers[idx]) return;
     revealState = { ...revealState, [idx]: 0 };
@@ -32,6 +37,7 @@
       const current = revealState[idx] ?? 0;
       const next = current + 1;
       revealState = { ...revealState, [idx]: next };
+      scrollMessagesToEnd();
       if (isRevealComplete(text, next)) {
         clearInterval(revealTimers[idx]);
         delete revealTimers[idx];
@@ -114,7 +120,7 @@
     {#each messages as m, i}
       <li class={m.from}>
         <span class="label">{m.from}</span>
-        <div class="bubble">
+        <div class="bubble{m.from === 'agent' && !isRevealComplete(m.text, revealState[i] ?? 0) ? ' revealing' : ''}">
           {#if m.from === 'agent'}
             {revealText(m.text, revealState[i] ?? 0)}
           {:else}
@@ -193,5 +199,19 @@
     border: none;
     font-size: 0.85em;
     opacity: 0.7;
+  }
+
+  .bubble.revealing::after {
+    content: '▋';
+    display: inline-block;
+    animation: blink 0.7s step-end infinite;
+    margin-left: 1px;
+    opacity: 1;
+    color: var(--accent, #aa3bff);
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
   }
 </style>
