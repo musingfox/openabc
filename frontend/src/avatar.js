@@ -26,7 +26,13 @@ export function stateToSrc(state) {
 const EMOJI_STATE = {
   '👀': 'listening',
   '🤔': 'thinking',
+  '🔥': 'speaking',
+  '👨‍💻': 'speaking',
+  '⚡': 'speaking',
   '🆗': 'speaking',
+  '😱': 'thinking',
+  '🥱': 'thinking',
+  '😨': 'thinking',
   '💪': 'speaking',
 };
 

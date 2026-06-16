@@ -59,11 +59,31 @@ if (isBun) {
       expect(replyToState({ type: 'reaction', text: '💪' })).toBe('speaking');
     });
 
-    // J2: unknown emoji -> idle
-    it('J2: unknown emoji reaction -> idle', () => {
-      expect(replyToState({ type: 'reaction', text: '🥱' })).toBe('idle');
-      expect(replyToState({ type: 'reaction', text: '😨' })).toBe('idle');
-      expect(replyToState({ type: 'reaction', text: '🔥' })).toBe('idle');
+    // J2: full emoji set -> non-idle states (previously unknown emojis now mapped)
+    it('J2: 🥱 reaction -> thinking (stall-soft)', () => {
+      expect(replyToState({ type: 'reaction', text: '🥱' })).toBe('thinking');
+    });
+    it('J2: 😨 reaction -> thinking (stall-hard)', () => {
+      expect(replyToState({ type: 'reaction', text: '😨' })).toBe('thinking');
+    });
+    it('J2: 🔥 reaction -> speaking (tool)', () => {
+      expect(replyToState({ type: 'reaction', text: '🔥' })).toBe('speaking');
+    });
+
+    // J4: full emoji set coverage
+    it('J4: 👨‍💻 reaction -> speaking (coding)', () => {
+      expect(replyToState({ type: 'reaction', text: '👨‍💻' })).toBe('speaking');
+    });
+    it('J4: ⚡ reaction -> speaking (web)', () => {
+      expect(replyToState({ type: 'reaction', text: '⚡' })).toBe('speaking');
+    });
+    it('J4: 😱 reaction -> thinking (error)', () => {
+      expect(replyToState({ type: 'reaction', text: '😱' })).toBe('thinking');
+    });
+
+    // J5: unknown emoji -> idle fallback
+    it('J5: unknown emoji 🎉 reaction -> idle (fallback)', () => {
+      expect(replyToState({ type: 'reaction', text: '🎉' })).toBe('idle');
     });
 
     // J3: remove reaction -> idle
@@ -149,10 +169,31 @@ if (isBun) {
       assert.default.strictEqual(replyToState({ type: 'reaction', text: '💪' }), 'speaking');
     });
 
-    // J2: unknown emoji -> idle
-    it('J2: unknown emoji reaction -> idle', () => {
-      assert.default.strictEqual(replyToState({ type: 'reaction', text: '🥱' }), 'idle');
-      assert.default.strictEqual(replyToState({ type: 'reaction', text: '😨' }), 'idle');
+    // J2: full emoji set -> non-idle states (previously unknown emojis now mapped)
+    it('J2: 🥱 reaction -> thinking (stall-soft)', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '🥱' }), 'thinking');
+    });
+    it('J2: 😨 reaction -> thinking (stall-hard)', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '😨' }), 'thinking');
+    });
+    it('J2: 🔥 reaction -> speaking (tool)', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '🔥' }), 'speaking');
+    });
+
+    // J4: full emoji set coverage
+    it('J4: 👨‍💻 reaction -> speaking (coding)', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '👨‍💻' }), 'speaking');
+    });
+    it('J4: ⚡ reaction -> speaking (web)', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '⚡' }), 'speaking');
+    });
+    it('J4: 😱 reaction -> thinking (error)', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '😱' }), 'thinking');
+    });
+
+    // J5: unknown emoji -> idle fallback
+    it('J5: unknown emoji 🎉 reaction -> idle (fallback)', () => {
+      assert.default.strictEqual(replyToState({ type: 'reaction', text: '🎉' }), 'idle');
     });
 
     // J3: remove reaction -> idle
