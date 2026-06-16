@@ -50,15 +50,22 @@ async fn handle_oab_connection(state: Arc<AppState>, socket: axum::extract::ws::
 
     info!("OAB client connected via WebSocket");
 
-    // Forward gateway events → OAB
+    // Forward gateway events → OAB.
+    // A broadcast Lagged must NOT tear down the connection: skip the dropped span and keep
+    // forwarding. Closed means all senders are gone → end the task cleanly.
     let send_task = tokio::spawn(async move {
         loop {
-            tokio::select! {
-                Ok(event_json) = event_rx.recv() => {
+            match event_rx.recv().await {
+                Ok(event_json) => {
                     if ws_tx.send(Message::Text(event_json.into())).await.is_err() {
                         break;
                     }
                 }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "event broadcast lagged; dropped messages, continuing");
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     });

@@ -1,6 +1,6 @@
 // Unit tests for stateToSrc and replyToState.
 // Compatible with `bun test` (Bun built-in) and `node --test` (node:test).
-import { stateToSrc, replyToState, reduceMessages } from './avatar.js';
+import { stateToSrc, replyToState, reduceMessages, nextBackoff } from './avatar.js';
 
 // Detect runner: bun vs node:test
 const isBun = typeof Bun !== 'undefined';
@@ -113,6 +113,27 @@ if (isBun) {
       expect(result.length).toBe(0);
     });
   });
+
+  describe('nextBackoff', () => {
+    // B1: attempt 0 => BASE (500ms)
+    it('B1: attempt 0 => 500', () => {
+      expect(nextBackoff(0)).toBe(500);
+    });
+    // B2: doubles each attempt
+    it('B2: attempt 1 => 1000, attempt 3 => 4000', () => {
+      expect(nextBackoff(1)).toBe(1000);
+      expect(nextBackoff(3)).toBe(4000);
+    });
+    // B3: capped at MAX (10000ms)
+    it('B3: large attempt capped at 10000', () => {
+      expect(nextBackoff(20)).toBe(10000);
+    });
+    // B4: invalid input treated as attempt 0
+    it('B4: negative / NaN => 500', () => {
+      expect(nextBackoff(-5)).toBe(500);
+      expect(nextBackoff(NaN)).toBe(500);
+    });
+  });
 } else {
   // node:test path
   const { describe, it } = await import('node:test');
@@ -221,6 +242,23 @@ if (isBun) {
     it('E-MSG: message push without text => unchanged', () => {
       const result = reduceMessages([], { type: 'message' });
       assert.default.strictEqual(result.length, 0);
+    });
+  });
+
+  describe('nextBackoff', () => {
+    it('B1: attempt 0 => 500', () => {
+      assert.default.strictEqual(nextBackoff(0), 500);
+    });
+    it('B2: attempt 1 => 1000, attempt 3 => 4000', () => {
+      assert.default.strictEqual(nextBackoff(1), 1000);
+      assert.default.strictEqual(nextBackoff(3), 4000);
+    });
+    it('B3: large attempt capped at 10000', () => {
+      assert.default.strictEqual(nextBackoff(20), 10000);
+    });
+    it('B4: negative / NaN => 500', () => {
+      assert.default.strictEqual(nextBackoff(-5), 500);
+      assert.default.strictEqual(nextBackoff(NaN), 500);
     });
   });
 }

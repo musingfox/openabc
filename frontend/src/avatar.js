@@ -72,3 +72,18 @@ export function replyToState(reply) {
   if (reply.type === 'message') return 'speaking';
   return 'idle';
 }
+
+/**
+ * Pure: reconnect backoff delay (ms) for a 0-based retry index.
+ * Exponential from BASE, doubling per attempt, capped at MAX.
+ * Negative / non-finite input is treated as attempt 0.
+ *
+ * @param {number} attempt - 0-based retry count
+ * @returns {number} delay in ms
+ */
+export function nextBackoff(attempt) {
+  const BASE = 500;
+  const MAX = 10000;
+  const n = Number.isFinite(attempt) && attempt > 0 ? Math.floor(attempt) : 0;
+  return Math.min(MAX, BASE * 2 ** n);
+}

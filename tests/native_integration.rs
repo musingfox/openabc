@@ -273,3 +273,60 @@ async fn e_r2_message_round_trips_with_no_op() {
     browser_ws.close(None).await.ok();
     oab_ws.close(None).await.ok();
 }
+
+/// E-LAG — a broadcast `Lagged` must NOT tear down the OAB `/ws` connection.
+/// Flood well past the 256-slot broadcast buffer WITHOUT draining the OAB side, so the
+/// send_task's next `recv()` observes `RecvError::Lagged`. A final sentinel event must
+/// still arrive on OAB `/ws` afterwards — proving the send_task skipped the lag instead
+/// of dying. The pre-fix single-branch `select!` panicked here, killing the connection.
+#[tokio::test]
+async fn e_lag_does_not_kill_oab_connection() {
+    let port = spawn_full_app().await;
+
+    let oab_url = format!("ws://127.0.0.1:{port}/ws");
+    let (mut oab_ws, _) = connect_async(&oab_url).await.expect("OAB /ws connect failed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let browser_url = format!("ws://127.0.0.1:{port}/native/ws");
+    let (mut browser_ws, _) = connect_async(&browser_url)
+        .await
+        .expect("browser /native/ws connect failed");
+
+    // Flood far past the 256-slot broadcast buffer while the OAB side is NOT being read,
+    // so the buffer overflows and the next OAB-side recv() returns Lagged.
+    for i in 0..600 {
+        browser_ws
+            .send(TMsg::Text(format!(r#"{{"text":"flood-{i}"}}"#).into()))
+            .await
+            .unwrap();
+    }
+    // A distinguishable final message that must still get through after the lag.
+    browser_ws
+        .send(TMsg::Text(r#"{"text":"SENTINEL-after-lag"}"#.to_string().into()))
+        .await
+        .unwrap();
+
+    // Let the broadcast overflow and mark the lag before we start draining.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Drain the OAB side: the sentinel event must eventually arrive.
+    let found = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match oab_ws.next().await {
+                Some(Ok(TMsg::Text(t))) => {
+                    if t.contains("SENTINEL-after-lag") {
+                        break true;
+                    }
+                }
+                Some(Ok(_)) => continue,
+                _ => break false, // stream ended / error → connection died on the lag (the bug)
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for sentinel — OAB connection likely died on lag");
+    assert!(found, "OAB /ws stream ended before the post-lag sentinel arrived");
+
+    browser_ws.close(None).await.ok();
+    oab_ws.close(None).await.ok();
+}
