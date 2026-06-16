@@ -201,26 +201,54 @@
 </main>
 
 <style>
-  #messages {
-    list-style: none;
-    padding: 0;
-    margin: 16px 0;
+  /* Centered, comfortable reading column. main is otherwise unstyled and would
+     inherit #app's text-align:center, which mis-centers chat content. */
+  main {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 0 24px 48px;
+    box-sizing: border-box;
+    text-align: left;
+  }
+
+  h1 { text-align: center; }
+
+  .avatar {
+    text-align: center;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    align-items: center;
+    gap: 4px;
+  }
+  .avatar img {
+    border-radius: 12px;
+    image-rendering: pixelated;
+  }
+
+  #messages {
+    list-style: none;
+    padding: 4px;
+    margin: 20px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
     max-height: 40vh;
     overflow-y: auto;
+    text-align: left;
   }
 
   #messages li {
     display: flex;
     flex-direction: column;
-    max-width: 70%;
+    max-width: 92%;
   }
 
+  /* Agent bubbles carry rich block content (headings/lists/math/diagrams);
+     let them use the full column width so content isn't cramped. */
   #messages li.agent {
     align-self: flex-start;
-    align-items: flex-start;
+    align-items: stretch;
+    width: 100%;
   }
 
   #messages li.you {
@@ -231,19 +259,26 @@
   #messages li.system {
     align-self: center;
     align-items: center;
+    max-width: 100%;
   }
 
   .label {
-    font-size: 0.75em;
-    opacity: 0.6;
-    margin-bottom: 2px;
+    font-size: 0.72em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.5;
+    margin-bottom: 4px;
   }
 
   .bubble {
-    padding: 8px 12px;
-    border-radius: 12px;
+    padding: 12px 16px;
+    border-radius: 14px;
     background: var(--accent-bg, rgba(170, 59, 255, 0.1));
     border: 1px solid var(--accent-border, rgba(170, 59, 255, 0.3));
+    line-height: 1.55;
+    overflow-x: auto;
+    overflow-wrap: anywhere;
   }
 
   #messages li.you .bubble {
@@ -270,5 +305,95 @@
   @keyframes blink {
     0%, 100% { opacity: 1; }
     50% { opacity: 0; }
+  }
+
+  /* Rich content injected via {@html} is NOT scoped by Svelte, so style it
+     through :global(). Tighten default margins and size diagrams/math/code. */
+  .bubble :global(h1),
+  .bubble :global(h2),
+  .bubble :global(h3) {
+    margin: 0.4em 0 0.3em;
+    line-height: 1.25;
+  }
+  .bubble :global(h1) { font-size: 1.4em; }
+  .bubble :global(h2) { font-size: 1.2em; }
+  .bubble :global(h3) { font-size: 1.05em; }
+  .bubble :global(p) { margin: 0.4em 0; }
+  .bubble :global(p:first-child) { margin-top: 0; }
+  .bubble :global(p:last-child) { margin-bottom: 0; }
+  .bubble :global(ul),
+  .bubble :global(ol) { margin: 0.4em 0; padding-left: 1.4em; }
+  .bubble :global(li) { margin: 0.2em 0; }
+  .bubble :global(a) { color: var(--accent, #aa3bff); }
+  .bubble :global(pre) {
+    background: var(--code-bg, #1f2028);
+    padding: 10px 14px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 0.5em 0;
+  }
+  .bubble :global(pre code) { background: none; padding: 0; }
+  .bubble :global(blockquote) {
+    margin: 0.5em 0;
+    padding-left: 12px;
+    border-left: 3px solid var(--accent-border, rgba(170, 59, 255, 0.4));
+    opacity: 0.85;
+  }
+  /* KaTeX block formulas: keep on one scrollable line rather than overflowing. */
+  .bubble :global(.katex-display) {
+    margin: 0.5em 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 2px 0;
+  }
+  /* Mermaid renders an <svg> in place — fit it to the bubble. */
+  .bubble :global(svg) {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 0.5em auto;
+  }
+  .bubble :global(.mermaid-pending) {
+    font-family: var(--mono, monospace);
+    font-size: 0.85em;
+    opacity: 0.6;
+    white-space: pre-wrap;
+  }
+
+  .composer {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin: 8px 0;
+  }
+  .composer input {
+    flex: 1;
+    max-width: 520px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--border, #2e303a);
+    background: var(--bg, #16171d);
+    color: inherit;
+    font: inherit;
+  }
+  .composer button {
+    padding: 10px 18px;
+    border-radius: 10px;
+    border: 1px solid var(--accent-border, rgba(170, 59, 255, 0.5));
+    background: var(--accent-bg, rgba(170, 59, 255, 0.12));
+    color: inherit;
+    cursor: pointer;
+  }
+  .fallback {
+    display: block;
+    margin: 4px auto 0;
+    padding: 6px 12px;
+    font-size: 0.8em;
+    opacity: 0.6;
+    background: none;
+    border: 1px solid var(--border, #2e303a);
+    border-radius: 8px;
+    color: inherit;
+    cursor: pointer;
   }
 </style>
