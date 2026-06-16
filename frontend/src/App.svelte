@@ -1,5 +1,5 @@
 <script>
-  import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom } from './avatar.js';
+  import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich } from './avatar.js';
 
   // Agent avatar state — driven by WebSocket push from openabc /native/ws.
   let agentState = $state('idle');
@@ -122,7 +122,11 @@
         <span class="label">{m.from}</span>
         <div class="bubble{m.from === 'agent' && !isRevealComplete(m.text, revealState[i] ?? 0) ? ' revealing' : ''}">
           {#if m.from === 'agent'}
-            {revealText(m.text, revealState[i] ?? 0)}
+            {#if shouldRenderRich(isRevealComplete(m.text, revealState[i] ?? 0))}
+              {@html renderRich(m.text)}
+            {:else}
+              {revealText(m.text, revealState[i] ?? 0)}
+            {/if}
           {:else}
             {m.text}
           {/if}

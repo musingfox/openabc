@@ -11,6 +11,10 @@
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "svelte": "^5.55.5",
-"vite": "^8.0.12"
+    "vite": "^8.0.12"
+  },
+  "dependencies": {
+    "isomorphic-dompurify": "^3.17.0",
+    "katex": "^0.17.0"
   }
 }

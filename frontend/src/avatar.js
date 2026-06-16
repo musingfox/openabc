@@ -1,3 +1,7 @@
+import { marked } from 'marked';
+import katex from 'katex';
+import DOMPurify from 'isomorphic-dompurify';
+
 // Module-level cached Intl.Segmenter singleton (grapheme granularity).
 const _segmenter = (typeof Intl !== 'undefined' && typeof Intl.Segmenter !== 'undefined')
   ? new Intl.Segmenter('en', { granularity: 'grapheme' })
@@ -128,6 +132,68 @@ export function replyToState(reply) {
  */
 export function scrollTopToBottom({ scrollHeight, clientHeight }) {
   return Math.max(0, scrollHeight - clientHeight);
+}
+
+/**
+ * Pure: render markdown + LaTeX to sanitized HTML string.
+ * Safe to call in Node/Bun test environments (no browser DOM required).
+ *
+ * Pipeline:
+ *   1. Extract $$..$$ and $..$  blocks, render with KaTeX, replace with placeholders.
+ *   2. Run through marked (markdown -> HTML).
+ *   3. Restore KaTeX HTML placeholders.
+ *   4. Sanitize with DOMPurify (strips onerror, javascript: hrefs, <script>, etc.).
+ *
+ * @param {string} text - raw markdown+latex string
+ * @returns {string} sanitized HTML
+ */
+export function renderRich(text) {
+  if (typeof text !== 'string') return '';
+
+  const placeholders = [];
+
+  // Step 1a: replace display math $$...$$ (before inline $ to avoid double-match)
+  let processed = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, math) => {
+    const rendered = katex.renderToString(math, { throwOnError: false, displayMode: true });
+    const idx = placeholders.length;
+    placeholders.push(rendered);
+    return `\x02KATEX${idx}\x03`;
+  });
+
+  // Step 1b: replace inline math $..$
+  processed = processed.replace(/\$([^$\n]+?)\$/g, (_, math) => {
+    const rendered = katex.renderToString(math, { throwOnError: false, displayMode: false });
+    const idx = placeholders.length;
+    placeholders.push(rendered);
+    return `\x02KATEX${idx}\x03`;
+  });
+
+  // Step 2: markdown -> HTML
+  let html = marked(processed);
+
+  // Step 3: restore KaTeX placeholders
+  html = html.replace(/\x02KATEX(\d+)\x03/g, (_, i) => placeholders[Number(i)] ?? '');
+
+  // Step 4: sanitize — allow math/katex markup but strip XSS vectors
+  const clean = DOMPurify.sanitize(html, {
+    ADD_TAGS: ['math', 'annotation', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub',
+               'mfrac', 'msqrt', 'mover', 'munder', 'munderover', 'mtable', 'mtr', 'mtd',
+               'mtext', 'mspace', 'mglyph'],
+    ADD_ATTR: ['xmlns', 'encoding', 'display', 'class', 'style', 'aria-hidden'],
+  });
+
+  return clean;
+}
+
+/**
+ * Pure coexistence decider: returns true only when reveal is complete,
+ * meaning it is safe to switch from plain streaming text to rich HTML.
+ *
+ * @param {boolean} isComplete - result of isRevealComplete(text, charsShown)
+ * @returns {boolean}
+ */
+export function shouldRenderRich(isComplete) {
+  return isComplete === true;
 }
 
 /**

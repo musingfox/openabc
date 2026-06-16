@@ -1,6 +1,6 @@
 // Unit tests for stateToSrc, replyToState, revealText, isRevealComplete.
 // Compatible with `bun test` (Bun built-in) and `node --test` (node:test).
-import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom } from './avatar.js';
+import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich } from './avatar.js';
 
 // Detect runner: bun vs node:test
 const isBun = typeof Bun !== 'undefined';
@@ -243,6 +243,53 @@ if (isBun) {
       expect(result[0].from).toBe('agent');
     });
   });
+
+  describe('renderRich (E-MD1/E-MD2/E-XSS/E-LTX/E-COEX)', () => {
+    it('E-MD1: renderRich is an exported function', () => {
+      expect(typeof renderRich).toBe('function');
+    });
+    it('E-MD1: renderRich("**a**") contains <strong>a</strong>', () => {
+      expect(renderRich('**a**')).toContain('<strong>a</strong>');
+    });
+    it('E-MD2: "# h" produces <h1>', () => {
+      expect(/<h1[ >]/.test(renderRich('# h'))).toBe(true);
+    });
+    it('E-MD2: fenced code produces <pre><code', () => {
+      expect(/<pre><code/.test(renderRich('```\nx\n```'))).toBe(true);
+    });
+    it('E-MD2: "- x" produces <li>', () => {
+      expect(/<li[ >]/.test(renderRich('- x'))).toBe(true);
+    });
+    it('E-MD2: "[t](u)" produces href="u"', () => {
+      expect(/href="u"/.test(renderRich('[t](u)'))).toBe(true);
+    });
+    it('E-XSS: onerror handler is stripped', () => {
+      expect(/onerror/i.test(renderRich('<img src=x onerror=alert(1)>'))).toBe(false);
+    });
+    it('E-XSS: javascript: href is neutralized', () => {
+      const out = renderRich('[x](javascript:alert(1))');
+      expect(/href="javascript:/i.test(out)).toBe(false);
+      expect(/href='javascript:/i.test(out)).toBe(false);
+    });
+    it('E-XSS: <script> tag is stripped', () => {
+      expect(/<script/i.test(renderRich('<script>alert(1)</script>'))).toBe(false);
+    });
+    it('E-LTX: inline $..$ produces KaTeX markup (class="katex")', () => {
+      expect(/class="katex/.test(renderRich('$E=mc^2$'))).toBe(true);
+    });
+    it('E-LTX: block $$..$$ produces KaTeX markup', () => {
+      expect(/class="katex/.test(renderRich('$$E=mc^2$$'))).toBe(true);
+    });
+    it('E-LTX: malformed latex does not throw', () => {
+      expect(() => renderRich('$\\frac$')).not.toThrow();
+    });
+    it('E-COEX: shouldRenderRich(true) === true', () => {
+      expect(shouldRenderRich(true)).toBe(true);
+    });
+    it('E-COEX: shouldRenderRich(false) === false', () => {
+      expect(shouldRenderRich(false)).toBe(false);
+    });
+  });
 } else {
   // node:test path
   const { describe, it } = await import('node:test');
@@ -467,6 +514,52 @@ if (isBun) {
     it('E3: agent message from WS has from=agent (streaming target)', () => {
       const result = reduceMessages([], { type: 'message', text: 'agent text' });
       assert.default.strictEqual(result[0].from, 'agent');
+    });
+  });
+
+  describe('renderRich (E-MD1/E-MD2/E-XSS/E-LTX/E-COEX)', () => {
+    it('E-MD1: renderRich is an exported function', () => {
+      assert.default.strictEqual(typeof renderRich, 'function');
+    });
+    it('E-MD1: renderRich("**a**") contains <strong>a</strong>', () => {
+      assert.default.ok(renderRich('**a**').includes('<strong>a</strong>'));
+    });
+    it('E-MD2: "# h" produces <h1>', () => {
+      assert.default.ok(/<h1[ >]/.test(renderRich('# h')));
+    });
+    it('E-MD2: fenced code produces <pre><code', () => {
+      assert.default.ok(/<pre><code/.test(renderRich('```\nx\n```')));
+    });
+    it('E-MD2: "- x" produces <li>', () => {
+      assert.default.ok(/<li[ >]/.test(renderRich('- x')));
+    });
+    it('E-MD2: "[t](u)" produces href="u"', () => {
+      assert.default.ok(/href="u"/.test(renderRich('[t](u)')));
+    });
+    it('E-XSS: onerror handler is stripped', () => {
+      assert.default.ok(!/onerror/i.test(renderRich('<img src=x onerror=alert(1)>')));
+    });
+    it('E-XSS: javascript: href is neutralized', () => {
+      const out = renderRich('[x](javascript:alert(1))');
+      assert.default.ok(!/href="javascript:/i.test(out) && !/href='javascript:/i.test(out));
+    });
+    it('E-XSS: <script> tag is stripped', () => {
+      assert.default.ok(!/<script/i.test(renderRich('<script>alert(1)</script>')));
+    });
+    it('E-LTX: inline $..$ produces KaTeX markup (class="katex")', () => {
+      assert.default.ok(/class="katex/.test(renderRich('$E=mc^2$')));
+    });
+    it('E-LTX: block $$..$$ produces KaTeX markup', () => {
+      assert.default.ok(/class="katex/.test(renderRich('$$E=mc^2$$')));
+    });
+    it('E-LTX: malformed latex does not throw', () => {
+      assert.default.doesNotThrow(() => renderRich('$\\frac$'));
+    });
+    it('E-COEX: shouldRenderRich(true) === true', () => {
+      assert.default.strictEqual(shouldRenderRich(true), true);
+    });
+    it('E-COEX: shouldRenderRich(false) === false', () => {
+      assert.default.strictEqual(shouldRenderRich(false), false);
     });
   });
 }
