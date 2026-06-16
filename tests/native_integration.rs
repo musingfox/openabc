@@ -186,3 +186,90 @@ async fn e2_e3_native_reply_round_trips_through_full_app() {
     browser_ws.close(None).await.ok();
     oab_ws.close(None).await.ok();
 }
+
+/// E-R1 — reaction round-trip via build_app real socket:
+/// OAB /ws sends GatewayReply command=add_reaction + content.text=👀 targeting the browser
+/// conn_id; the browser WS must receive JSON with type=="reaction", op=="add", text=="👀".
+#[tokio::test]
+async fn e_r1_reaction_add_round_trips_to_browser_ws() {
+    let port = spawn_full_app().await;
+    let (mut browser_ws, mut oab_ws, conn_id) = connect_browser_and_get_conn_id(port).await;
+
+    let reply = serde_json::json!({
+        "schema": "openab.gateway.reply.v1",
+        "reply_to": "evt_reaction",
+        "platform": "native",
+        "channel": { "id": conn_id, "thread_id": null },
+        "content": { "type": "text", "text": "👀", "attachments": [] },
+        "command": "add_reaction",
+        "request_id": null,
+        "quote_message_id": null
+    });
+    oab_ws
+        .send(TMsg::Text(reply.to_string().into()))
+        .await
+        .unwrap();
+
+    let pushed = loop {
+        let msg = tokio::time::timeout(Duration::from_secs(3), browser_ws.next())
+            .await
+            .expect("timeout waiting for reaction push to browser")
+            .expect("browser ws stream ended")
+            .expect("browser ws error");
+        if let TMsg::Text(t) = msg {
+            break t.to_string();
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&pushed).expect("push must be JSON");
+    assert_eq!(v["type"], "reaction", "E-R1: push type must be `reaction`");
+    assert_eq!(v["op"], "add", "E-R1: op must be `add`");
+    assert_eq!(v["text"], "👀", "E-R1: text must be the emoji 👀");
+
+    browser_ws.close(None).await.ok();
+    oab_ws.close(None).await.ok();
+}
+
+/// E-R2 — message round-trip via build_app real socket:
+/// OAB /ws sends GatewayReply command=null + content.text="hello"; the browser WS must
+/// receive JSON with type=="message", text=="hello", and no op field (or op null).
+#[tokio::test]
+async fn e_r2_message_round_trips_with_no_op() {
+    let port = spawn_full_app().await;
+    let (mut browser_ws, mut oab_ws, conn_id) = connect_browser_and_get_conn_id(port).await;
+
+    let reply = serde_json::json!({
+        "schema": "openab.gateway.reply.v1",
+        "reply_to": "evt_msg",
+        "platform": "native",
+        "channel": { "id": conn_id, "thread_id": null },
+        "content": { "type": "text", "text": "hello", "attachments": [] },
+        "command": null,
+        "request_id": null,
+        "quote_message_id": null
+    });
+    oab_ws
+        .send(TMsg::Text(reply.to_string().into()))
+        .await
+        .unwrap();
+
+    let pushed = loop {
+        let msg = tokio::time::timeout(Duration::from_secs(3), browser_ws.next())
+            .await
+            .expect("timeout waiting for message push to browser")
+            .expect("browser ws stream ended")
+            .expect("browser ws error");
+        if let TMsg::Text(t) = msg {
+            break t.to_string();
+        }
+    };
+    let v: serde_json::Value = serde_json::from_str(&pushed).expect("push must be JSON");
+    assert_eq!(v["type"], "message", "E-R2: push type must be `message`");
+    assert_eq!(v["text"], "hello", "E-R2: text must be `hello`");
+    assert!(
+        v.get("op").is_none() || v["op"].is_null(),
+        "E-R2: op must be absent or null for a plain message push"
+    );
+
+    browser_ws.close(None).await.ok();
+    oab_ws.close(None).await.ok();
+}

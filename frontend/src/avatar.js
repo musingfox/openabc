@@ -41,6 +41,22 @@ const EMOJI_STATE = {
  * @param {object|null|undefined} reply - parsed WS message object
  * @returns {string} one of idle|speaking|listening|thinking
  */
+/**
+ * Pure reducer: derive the next messages array from the current array and a push.
+ * - push.type === "message" with a string text → append {from:"agent", text}.
+ * - push.type === "reaction" (or message with no text) → return original array unchanged.
+ *
+ * @param {Array} messages - current messages array
+ * @param {object} push - parsed WS push object
+ * @returns {Array} new (or same) messages array
+ */
+export function reduceMessages(messages, push) {
+  if (push && push.type === 'message' && typeof push.text === 'string') {
+    return [...messages, { from: 'agent', text: push.text }];
+  }
+  return messages;
+}
+
 export function replyToState(reply) {
   if (!reply || typeof reply !== 'object') return 'idle';
   if (reply.type === 'reaction') {

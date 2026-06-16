@@ -1,6 +1,6 @@
 // Unit tests for stateToSrc and replyToState.
 // Compatible with `bun test` (Bun built-in) and `node --test` (node:test).
-import { stateToSrc, replyToState } from './avatar.js';
+import { stateToSrc, replyToState, reduceMessages } from './avatar.js';
 
 // Detect runner: bun vs node:test
 const isBun = typeof Bun !== 'undefined';
@@ -71,6 +71,28 @@ if (isBun) {
       expect(replyToState({ type: 'reaction', op: 'remove', text: '👀' })).toBe('idle');
     });
   });
+
+  describe('reduceMessages', () => {
+    // E-RED: reaction push must NOT enter the messages array
+    it('E-RED: reaction push => messages unchanged (length 0)', () => {
+      const result = reduceMessages([], { type: 'reaction', op: 'add', text: '👀' });
+      expect(result.length).toBe(0);
+    });
+
+    // E-MSG: message push with text => appended as {from:'agent', text}
+    it('E-MSG: message push with text => length 1, from=agent, text preserved', () => {
+      const result = reduceMessages([], { type: 'message', text: 'hi' });
+      expect(result.length).toBe(1);
+      expect(result[0].from).toBe('agent');
+      expect(result[0].text).toBe('hi');
+    });
+
+    // E-MSG: message push without text => unchanged
+    it('E-MSG: message push without text => unchanged', () => {
+      const result = reduceMessages([], { type: 'message' });
+      expect(result.length).toBe(0);
+    });
+  });
 } else {
   // node:test path
   const { describe, it } = await import('node:test');
@@ -136,6 +158,28 @@ if (isBun) {
     // J3: remove reaction -> idle
     it('J3: reaction with op=remove -> idle', () => {
       assert.default.strictEqual(replyToState({ type: 'reaction', op: 'remove', text: '👀' }), 'idle');
+    });
+  });
+
+  describe('reduceMessages', () => {
+    // E-RED: reaction push must NOT enter the messages array
+    it('E-RED: reaction push => messages unchanged (length 0)', () => {
+      const result = reduceMessages([], { type: 'reaction', op: 'add', text: '👀' });
+      assert.default.strictEqual(result.length, 0);
+    });
+
+    // E-MSG: message push with text => appended as {from:'agent', text}
+    it('E-MSG: message push with text => length 1, from=agent, text preserved', () => {
+      const result = reduceMessages([], { type: 'message', text: 'hi' });
+      assert.default.strictEqual(result.length, 1);
+      assert.default.strictEqual(result[0].from, 'agent');
+      assert.default.strictEqual(result[0].text, 'hi');
+    });
+
+    // E-MSG: message push without text => unchanged
+    it('E-MSG: message push without text => unchanged', () => {
+      const result = reduceMessages([], { type: 'message' });
+      assert.default.strictEqual(result.length, 0);
     });
   });
 }

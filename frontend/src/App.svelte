@@ -1,5 +1,5 @@
 <script>
-  import { stateToSrc, replyToState } from './avatar.js';
+  import { stateToSrc, replyToState, reduceMessages } from './avatar.js';
 
   // Agent avatar state — driven by WebSocket push from openabc /native/ws.
   let agentState = $state('idle');
@@ -21,9 +21,7 @@
       try { obj = JSON.parse(event.data); } catch { return; }
       // reaction pushes drive avatar state only; they do NOT enter the message stream.
       agentState = replyToState(obj);
-      if (obj && obj.type === 'message' && typeof obj.text === 'string') {
-        messages = [...messages, { from: 'agent', text: obj.text }];
-      }
+      messages = reduceMessages(messages, obj);
     };
     ws.onerror = () => { /* ignore */ };
     ws.onclose = () => { ws = null; };
