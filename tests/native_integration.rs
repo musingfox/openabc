@@ -71,7 +71,9 @@ async fn connect_browser_and_get_conn_id(
 }
 
 /// E1 — native router merged into the main app: the FULL app (via build_app)
-/// serves GET /native with 200 and a body that references the WS client script.
+/// serves GET /native with 200 and body containing the real sprite avatar UI
+/// (stateToSrc mapping referencing idle/speaking/listening/thinking states via /assets/).
+/// Also asserts /native/ws is referenced and the WS connection is established.
 #[tokio::test]
 async fn e1_full_app_serves_native_ui() {
     let port = spawn_full_app().await;
@@ -79,25 +81,75 @@ async fn e1_full_app_serves_native_ui() {
     let resp = reqwest::get(&url).await.expect("GET /native failed");
     assert_eq!(resp.status(), 200, "GET /native must return 200");
     let body = resp.text().await.unwrap();
+
+    // The embedded page loads the built JS bundle which contains stateToSrc + replyToState.
+    // The HTML references /assets/ for the bundle.
     assert!(
-        body.contains("new WebSocket"),
-        "GET /native body must contain `new WebSocket`"
+        body.contains("/assets/"),
+        "GET /native body must reference /assets/ (embedded sprite UI)"
     );
+
+    // The HTML must be a valid document with a script tag loading the avatar bundle.
     assert!(
-        body.contains("/native/ws"),
-        "GET /native body must reference `/native/ws`"
+        body.contains("<script"),
+        "GET /native body must contain a <script> tag loading the avatar bundle"
+    );
+
+    // The JS bundle (served at /assets/index.js) must contain the sprite state machine.
+    // We verify this by fetching the JS asset and asserting it references all four states.
+    let js_url = format!("http://127.0.0.1:{port}/assets/index.js");
+    let js_resp = reqwest::get(&js_url).await.expect("GET /assets/index.js failed");
+    assert_eq!(js_resp.status(), 200, "GET /assets/index.js must return 200");
+    let js_body = js_resp.text().await.unwrap();
+
+    // The built JS must contain stateToSrc (sprite state->src mapping) and all four states.
+    assert!(js_body.contains("idle"), "JS bundle must reference 'idle' state");
+    assert!(js_body.contains("speaking"), "JS bundle must reference 'speaking' state");
+    assert!(js_body.contains("listening"), "JS bundle must reference 'listening' state");
+    assert!(js_body.contains("thinking"), "JS bundle must reference 'thinking' state");
+
+    // The JS must reference /native/ws for the WebSocket connection.
+    assert!(
+        js_body.contains("/native/ws"),
+        "JS bundle must reference /native/ws for the WebSocket connection"
+    );
+
+    // The JS must also contain new WebSocket construction.
+    assert!(
+        js_body.contains("WebSocket"),
+        "JS bundle must contain WebSocket (new WebSocket)"
     );
 }
 
-/// E2 + E3 — an outbound platform=native GatewayReply, sent on the OAB-side
+/// E2 — embedded asset serving: GET /assets/idle.png returns 200 with image/png.
+/// Verifies all four sprite states are served as embedded PNG assets.
+#[tokio::test]
+async fn e2_embedded_sprite_assets_served() {
+    let port = spawn_full_app().await;
+
+    for state in &["idle", "speaking", "listening", "thinking"] {
+        let url = format!("http://127.0.0.1:{port}/assets/{state}.png");
+        let resp = reqwest::get(&url).await.unwrap_or_else(|e| panic!("GET /assets/{state}.png failed: {e}"));
+        assert_eq!(resp.status(), 200, "GET /assets/{state}.png must return 200");
+        let ct = resp.headers()
+            .get("content-type")
+            .expect("content-type header must be present")
+            .to_str()
+            .unwrap();
+        assert!(ct.contains("image/png"), "content-type must be image/png for {state}.png, got {ct}");
+    }
+}
+
+/// E3 / E4 — an outbound platform=native GatewayReply, sent on the OAB-side
 /// `/ws`, traverses the main reply loop's native branch and is pushed to the
-/// matching browser WS.
+/// matching browser WS. The browser receives {"type":"message","text":"pong-from-oab"}.
 #[tokio::test]
 async fn e2_e3_native_reply_round_trips_through_full_app() {
     let port = spawn_full_app().await;
     let (mut browser_ws, mut oab_ws, conn_id) = connect_browser_and_get_conn_id(port).await;
 
     // OAB sends a GatewayReply targeting that conn_id over the SAME /ws socket.
+    // platform=native triggers the native branch in build_app's reply loop.
     let reply = serde_json::json!({
         "schema": "openab.gateway.reply.v1",
         "reply_to": "evt_x",

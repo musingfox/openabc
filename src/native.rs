@@ -1,8 +1,9 @@
 /// Native adapter — browser WebSocket interface.
 ///
-/// Exposes two routes:
-///   GET /native            — minimal browser UI (HTML + WS script)
+/// Exposes routes:
+///   GET /native            — embedded sprite avatar UI (built frontend)
 ///   GET /native/ws         — browser WebSocket connections
+///   GET /assets/*path      — embedded frontend static assets
 ///
 /// Inbound (browser → adapter): JSON `{"text": "..."}`
 ///   → produces a GatewayEvent (openab.gateway.event.v1, platform=native)
@@ -16,8 +17,9 @@ use crate::AppState;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Path, State,
     },
+    http::{header, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::get,
     Router,
@@ -28,6 +30,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{error, info};
+
+// ─── Embedded frontend assets ────────────────────────────────────────────────
+
+static INDEX_HTML: &[u8] = include_bytes!("../frontend/dist/index.html");
+static ASSET_INDEX_JS: &[u8] = include_bytes!("../frontend/dist/assets/index.js");
+static ASSET_INDEX_CSS: &[u8] = include_bytes!("../frontend/dist/assets/index.css");
+static ASSET_IDLE_PNG: &[u8] = include_bytes!("../frontend/dist/assets/idle.png");
+static ASSET_SPEAKING_PNG: &[u8] = include_bytes!("../frontend/dist/assets/speaking.png");
+static ASSET_LISTENING_PNG: &[u8] = include_bytes!("../frontend/dist/assets/listening.png");
+static ASSET_THINKING_PNG: &[u8] = include_bytes!("../frontend/dist/assets/thinking.png");
 
 // ─── shared state ────────────────────────────────────────────────────────────
 
@@ -48,34 +60,54 @@ pub struct BrowserPush {
     pub text: String,
 }
 
-// ─── HTTP GET /native — minimal browser UI ───────────────────────────────────
+// ─── HTTP GET /native — embedded sprite avatar UI ────────────────────────────
 
 pub async fn ui_handler() -> impl IntoResponse {
-    Html(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><title>OpenABC Native</title></head>
-<body>
-<ul id="messages"></ul>
-<input id="input" type="text" placeholder="Type a message…">
-<button onclick="send()">Send</button>
-<script>
-const ws = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/native/ws');
-ws.onmessage = e => {
-  const li = document.createElement('li');
-  li.textContent = JSON.parse(e.data).text;
-  document.getElementById('messages').appendChild(li);
-};
-function send() {
-  const inp = document.getElementById('input');
-  ws.send(JSON.stringify({text: inp.value}));
-  inp.value = '';
+    Html(std::str::from_utf8(INDEX_HTML).unwrap_or("<!DOCTYPE html><html><body>error</body></html>").to_string())
 }
-document.getElementById('input').addEventListener('keydown', e => { if(e.key==='Enter') send(); });
-</script>
-</body>
-</html>"#,
-    )
+
+// ─── HTTP GET /assets/:path — embedded static assets ────────────────────────
+
+pub async fn assets_handler(Path(asset_path): Path<String>) -> Response {
+    match asset_path.as_str() {
+        "index.js" => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/javascript")],
+            ASSET_INDEX_JS,
+        )
+            .into_response(),
+        "index.css" => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/css")],
+            ASSET_INDEX_CSS,
+        )
+            .into_response(),
+        "idle.png" => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "image/png")],
+            ASSET_IDLE_PNG,
+        )
+            .into_response(),
+        "speaking.png" => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "image/png")],
+            ASSET_SPEAKING_PNG,
+        )
+            .into_response(),
+        "listening.png" => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "image/png")],
+            ASSET_LISTENING_PNG,
+        )
+            .into_response(),
+        "thinking.png" => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "image/png")],
+            ASSET_THINKING_PNG,
+        )
+            .into_response(),
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 // ─── WS handler — one connection per browser tab ─────────────────────────────
@@ -190,6 +222,7 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/native", get(ui_handler))
         .route("/native/ws", get(ws_handler))
+        .route("/assets/{*path}", get(assets_handler))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -391,7 +424,7 @@ mod tests {
         ws_b.close(None).await.unwrap();
     }
 
-    // Example 4: HTTP GET /native returns HTML with WS-connect script.
+    // Example 4: HTTP GET /native returns embedded sprite avatar UI.
     #[tokio::test]
     async fn http_get_root_returns_ui_with_ws_script() {
         use axum::body::Body;
@@ -408,11 +441,33 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = to_bytes(resp.into_body(), 1024 * 64).await.unwrap();
+        let body = to_bytes(resp.into_body(), 1024 * 256).await.unwrap();
         let html = String::from_utf8(body.to_vec()).unwrap();
 
-        assert!(html.contains("<input"), "UI must contain an input element");
-        assert!(html.contains("new WebSocket"), "UI must contain a WebSocket connection script");
-        assert!(html.contains("/native/ws"), "WS script must reference /native/ws");
+        // Must reference /native/ws in the embedded JS (via assets/index.js loaded by page)
+        assert!(html.contains("<script"), "UI must load a script");
+        assert!(html.contains("/assets/"), "UI must reference embedded assets");
+        // The page title from vite build
+        assert!(html.contains("<!doctype html") || html.contains("<!DOCTYPE html"), "must be HTML");
+    }
+
+    // Example 5: HTTP GET /assets/idle.png returns 200 with image/png.
+    #[tokio::test]
+    async fn http_get_assets_idle_png_returns_200() {
+        use axum::body::Body;
+
+        let (senders, event_tx, _) = make_state();
+        let app = build_router(senders, event_tx);
+
+        let req = Request::builder()
+            .uri("/assets/idle.png")
+            .body(Body::empty())
+            .unwrap();
+
+        use tower::util::ServiceExt;
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert_eq!(ct, "image/png");
     }
 }
