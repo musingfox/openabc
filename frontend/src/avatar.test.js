@@ -393,6 +393,24 @@ if (isBun) {
     });
   });
 
+  describe('mermaid pending on close', () => {
+    it('T1: half mermaid fence does not emit a mermaid marker', () => {
+      const out = splitRevealedForRender('```mermaid\ngraph TD;A-->B');
+      expect(MERMAID_MARKER.test(out.richHtml)).toBe(false);
+    });
+    it('T2: closed mermaid fence emits exactly one pending marker and no tail', () => {
+      const out = splitRevealedForRender('```mermaid\ngraph TD;A-->B\n```');
+      expect(MERMAID_MARKER.test(out.richHtml)).toBe(true);
+      expect((out.richHtml.match(/class="[^"]*mermaid-pending[^"]*"/g) || []).length).toBe(1);
+      expect(out.plainTail).toBe('');
+    });
+    it('T3: closed mermaid fence renders while following streaming text stays plain', () => {
+      const out = splitRevealedForRender('prefix text\n```mermaid\ngraph TD;A-->B\n```\nsuffix still streaming');
+      expect(MERMAID_MARKER.test(out.richHtml)).toBe(true);
+      expect(out.plainTail).toContain('suffix still streaming');
+    });
+  });
+
   describe('splitRevealedForRender', () => {
     it('T1: closed bold renders rich and has no plain tail', () => {
       const out = splitRevealedForRender('Hello **world**');
@@ -799,6 +817,24 @@ if (isBun) {
       const out = splitRevealedForRender('I paid $5 and $10');
       assert.default.ok(out.richHtml.includes('class="katex'));
       assert.default.strictEqual(out.plainTail, '');
+    });
+  });
+
+  describe('mermaid pending on close', () => {
+    it('T1: half mermaid fence does not emit a mermaid marker', () => {
+      const out = splitRevealedForRender('```mermaid\ngraph TD;A-->B');
+      assert.default.strictEqual(MERMAID_MARKER.test(out.richHtml), false);
+    });
+    it('T2: closed mermaid fence emits exactly one pending marker and no tail', () => {
+      const out = splitRevealedForRender('```mermaid\ngraph TD;A-->B\n```');
+      assert.default.ok(MERMAID_MARKER.test(out.richHtml));
+      assert.default.strictEqual((out.richHtml.match(/class="[^"]*mermaid-pending[^"]*"/g) || []).length, 1);
+      assert.default.strictEqual(out.plainTail, '');
+    });
+    it('T3: closed mermaid fence renders while following streaming text stays plain', () => {
+      const out = splitRevealedForRender('prefix text\n```mermaid\ngraph TD;A-->B\n```\nsuffix still streaming');
+      assert.default.ok(MERMAID_MARKER.test(out.richHtml));
+      assert.default.ok(out.plainTail.includes('suffix still streaming'));
     });
   });
 
