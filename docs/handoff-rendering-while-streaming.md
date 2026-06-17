@@ -339,10 +339,24 @@ delimiter), not two independent inline delimiters, so counting them as two for p
 purposes gives the wrong pairing. The shared tokenizer's greedy simulation is the only
 approach that faithfully replicates `renderRich`'s actual behaviour.
 
+**Boundary case — `$$$x$$`** (faithful-mirror regression):
+
+- input literal `"$$$x$$"`.
+- Display pass (pseudocode step 3, the indexOf search starting at i+2): at position 0,
+  text[0..2]=="$$", so search for closing `$$` starting at index 2; finds `$$` at index 4 →
+  closed display pair, content `$x` (chars 2–3), `i` advances to 6, loop ends.
+- `renderRich` display regex likewise matches `$$…$$` greedily at the start, yielding the same
+  closed display block with content `$x`.
+- Both methods agree: closed display construct, no unclosed delimiter, `plainTail` is empty,
+  `richHtml === renderRich("$$$x$$")`.
+- This confirms the faithful-mirror invariant holds at the `$$$` boundary (three consecutive
+  dollar signs): the pseudocode `indexOf` and `renderRich`'s own regex produce identical
+  tokenization, so `splitRevealedForRender` cannot diverge here.
+
 ##### E-DEFECT1 test case: greedy inline `$` produces katex for price-like text
 
 - input literal `"I paid $5 and $10"` — the inline `$` regex `/\$([^$\n]+?)\$/g` greedily
-  matches `$5 and $` as a pair (content: `5 and $1`), so `renderRich` produces katex for this
+  matches `$5 and $` as a pair (content: `5 and `), so `renderRich` produces katex for this
   input. This is a known greedy false-positive in the current pipeline.
 - Expected (faithful to renderRich): `richHtml` **contains** `class="katex` — because
   `splitRevealedForRender` must faithfully replicate `renderRich` output; the trailing `10`
@@ -658,7 +672,7 @@ This is the correct trade-off: safety and correctness over eagerness.
      char-index positions (string `.slice()`, regex match indices) — char-index only.
   2. Fence state takes priority: math delimiters inside a balanced fence are ignored.
   3. Scan priority: display `$$` before inline `$` (matching `renderRich` pipeline order).
-  4. Finds the minimum start char-index of any unclosed construct.
+  4. Finds the first unclosed construct start.
   5. Calls `renderRich(prefix)` on the safe prefix and returns `{ richHtml, plainTail }`.
   6. On any exception, returns `{ richHtml: '', plainTail: revealedPrefix }` (fail-safe).
 - **order**: Must be done before Step 2 (App.svelte depends on it).
