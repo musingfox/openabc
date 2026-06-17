@@ -321,6 +321,82 @@ export function renderRich(text) {
   return clean;
 }
 
+function findInlineMathClose(text, start) {
+  const newline = text.indexOf('\n', start + 1);
+  const searchEnd = newline === -1 ? text.length : newline;
+  const close = text.indexOf('$', start + 1);
+  return close !== -1 && close < searchEnd && close > start + 1 ? close : -1;
+}
+
+function findFenceClose(text, start) {
+  const afterOpen = start + 3;
+  const firstLineEnd = text.indexOf('\n', afterOpen);
+  const searchFrom = firstLineEnd === -1 ? afterOpen : firstLineEnd + 1;
+  return text.indexOf('```', searchFrom);
+}
+
+function isMermaidFence(text, start) {
+  const langStart = start + 3;
+  const lineEnd = text.indexOf('\n', langStart);
+  const rawLang = text.slice(langStart, lineEnd === -1 ? text.length : lineEnd).trim().toLowerCase();
+  return rawLang === 'mermaid';
+}
+
+function findRenderablePrefixEnd(revealedText) {
+  let lastClosedMermaidEnd = -1;
+
+  for (let i = 0; i < revealedText.length; i++) {
+    if (revealedText.startsWith('```', i)) {
+      const close = findFenceClose(revealedText, i);
+      if (close === -1) return i;
+      if (isMermaidFence(revealedText, i)) lastClosedMermaidEnd = close + 3;
+      i = close + 2;
+      continue;
+    }
+
+    if (revealedText.startsWith('$$', i)) {
+      const close = revealedText.indexOf('$$', i + 2);
+      if (close === -1) return i;
+      i = close + 1;
+      continue;
+    }
+
+    if (revealedText[i] === '$') {
+      const close = findInlineMathClose(revealedText, i);
+      if (close === -1) return i;
+      i = close;
+    }
+  }
+
+  if (lastClosedMermaidEnd !== -1 && lastClosedMermaidEnd < revealedText.length) {
+    return lastClosedMermaidEnd;
+  }
+
+  return revealedText.length;
+}
+
+/**
+ * Pure: split an already revealed streaming prefix into a rich-renderable prefix
+ * and a raw plain-text tail. Any unclosed code fence, display math, inline math,
+ * or half mermaid fence stays out of renderRich so it cannot be partially
+ * interpreted as HTML/KaTeX/mermaid while the message is still revealing.
+ *
+ * @param {string} revealedText - already-revealed prefix of the full message
+ * @returns {{richHtml: string, plainTail: string}}
+ */
+export function splitRevealedForRender(revealedText) {
+  if (typeof revealedText !== 'string' || revealedText.length === 0) {
+    return { richHtml: '', plainTail: '' };
+  }
+
+  const richEnd = findRenderablePrefixEnd(revealedText);
+  const richText = revealedText.slice(0, richEnd);
+  return {
+    richHtml: richText ? renderRich(richText) : '',
+    plainTail: revealedText.slice(richEnd),
+  };
+}
+
 /**
  * Pure coexistence decider: returns true only when reveal is complete,
  * meaning it is safe to switch from plain streaming text to rich HTML.

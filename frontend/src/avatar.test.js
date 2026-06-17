@@ -1,6 +1,6 @@
 // Unit tests for stateToSrc, replyToState, revealText, isRevealComplete.
 // Compatible with `bun test` (Bun built-in) and `node --test` (node:test).
-import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich } from './avatar.js';
+import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender } from './avatar.js';
 
 // Detect runner: bun vs node:test
 const isBun = typeof Bun !== 'undefined';
@@ -369,6 +369,43 @@ if (isBun) {
       expect(/onload=/i.test(out)).toBe(false);
     });
   });
+
+  describe('splitRevealedForRender', () => {
+    it('T1: closed bold renders rich and has no plain tail', () => {
+      const out = splitRevealedForRender('Hello **world**');
+      expect(out.richHtml).toContain('<strong>world</strong>');
+      expect(out.plainTail).toBe('');
+    });
+    it('T2: unclosed display math remains raw plain text', () => {
+      const out = splitRevealedForRender('result: $$\\frac{a');
+      expect(out.richHtml).toBe(renderRich('result: '));
+      expect(out.plainTail).toBe('$$\\frac{a');
+    });
+    it('T3: unclosed inline math remains raw plain text', () => {
+      const out = splitRevealedForRender('text $lonely');
+      expect(out.richHtml).toBe(renderRich('text '));
+      expect(out.plainTail).toBe('$lonely');
+    });
+    it('T4: closed inline math and bold render together', () => {
+      const out = splitRevealedForRender('$x$ is inline and **bold**');
+      expect(/class="katex/.test(out.richHtml)).toBe(true);
+      expect(out.richHtml).toContain('<strong>bold</strong>');
+      expect(out.plainTail).toBe('');
+    });
+    it('T5: empty revealed text returns empty pieces', () => {
+      expect(splitRevealedForRender('')).toEqual({ richHtml: '', plainTail: '' });
+    });
+    it('T6: $$$x$$ follows renderRich display-boundary behavior', () => {
+      const out = splitRevealedForRender('$$$x$$');
+      expect(out.plainTail).toBe('');
+      expect(out.richHtml).toBe(renderRich('$$$x$$'));
+    });
+    it('T7: later unclosed inline math becomes plain tail after earlier closed math', () => {
+      const out = splitRevealedForRender('a $x$ b $y');
+      expect(out.richHtml).toBe(renderRich('a $x$ b '));
+      expect(out.plainTail).toContain('$y');
+    });
+  });
 } else {
   // node:test path
   const { describe, it } = await import('node:test');
@@ -679,12 +716,12 @@ if (isBun) {
     });
   });
 
-  const MERMAID_MARKER_NODE = /(class="[^"]*mermaid|data-[a-z-]*mermaid|data-mermaid)/i;
+  const MERMAID_MARKER = /(class="[^"]*mermaid|data-[a-z-]*mermaid|data-mermaid)/i;
 
   describe('renderRich mermaid (E1-E5)', () => {
     it('E1: mermaid fence produces mermaid marker (class/data-attr)', () => {
       const out = renderRich('```mermaid\ngraph TD;A-->B\n```');
-      assert.default.ok(MERMAID_MARKER_NODE.test(out), 'expected mermaid marker in: ' + out);
+      assert.default.ok(MERMAID_MARKER.test(out), 'expected mermaid marker in: ' + out);
     });
     it('E1: mermaid fence does NOT produce <code>graph TD', () => {
       const out = renderRich('```mermaid\ngraph TD;A-->B\n```');
@@ -692,18 +729,18 @@ if (isBun) {
     });
     it('E1: graph source is carried (base64 encoded) for later render', () => {
       const out = renderRich('```mermaid\ngraph TD;A-->B\n```');
-      assert.default.ok(MERMAID_MARKER_NODE.test(out), 'mermaid marker must be present in: ' + out);
+      assert.default.ok(MERMAID_MARKER.test(out), 'mermaid marker must be present in: ' + out);
     });
     it('E2: normal js fence stays <pre><code>, no mermaid marker', () => {
       const out = renderRich('```js\nconst a = 1;\n```');
       assert.default.ok(/<code/i.test(out), 'expected <code in: ' + out);
-      assert.default.ok(!MERMAID_MARKER_NODE.test(out), 'must not have mermaid marker in: ' + out);
+      assert.default.ok(!MERMAID_MARKER.test(out), 'must not have mermaid marker in: ' + out);
     });
     it('E3: katex + strong + mermaid fence coexist', () => {
       const out = renderRich('$x$ **b**\n\n```mermaid\ngraph LR;X-->Y\n```');
       assert.default.ok(/class="katex/.test(out), 'katex must be present in: ' + out);
       assert.default.ok(/<strong>b<\/strong>/.test(out), 'strong must be present in: ' + out);
-      assert.default.ok(MERMAID_MARKER_NODE.test(out), 'mermaid marker must be present in: ' + out);
+      assert.default.ok(MERMAID_MARKER.test(out), 'mermaid marker must be present in: ' + out);
     });
     it('E4: <script> in mermaid source is absent from output', () => {
       const out = renderRich('```mermaid\ngraph TD;A-->B\n<script>alert(1)</script>\n```');
@@ -716,6 +753,43 @@ if (isBun) {
     it('E5: onload= via svg in mermaid source is absent from output', () => {
       const out = renderRich('```mermaid\ngraph TD;A["><svg onload=alert(1)"]-->B\n```');
       assert.default.ok(!/onload=/i.test(out), 'must not contain onload= in: ' + out);
+    });
+  });
+
+  describe('splitRevealedForRender', () => {
+    it('T1: closed bold renders rich and has no plain tail', () => {
+      const out = splitRevealedForRender('Hello **world**');
+      assert.default.ok(out.richHtml.includes('<strong>world</strong>'));
+      assert.default.strictEqual(out.plainTail, '');
+    });
+    it('T2: unclosed display math remains raw plain text', () => {
+      const out = splitRevealedForRender('result: $$\\frac{a');
+      assert.default.strictEqual(out.richHtml, renderRich('result: '));
+      assert.default.strictEqual(out.plainTail, '$$\\frac{a');
+    });
+    it('T3: unclosed inline math remains raw plain text', () => {
+      const out = splitRevealedForRender('text $lonely');
+      assert.default.strictEqual(out.richHtml, renderRich('text '));
+      assert.default.strictEqual(out.plainTail, '$lonely');
+    });
+    it('T4: closed inline math and bold render together', () => {
+      const out = splitRevealedForRender('$x$ is inline and **bold**');
+      assert.default.ok(/class="katex/.test(out.richHtml));
+      assert.default.ok(out.richHtml.includes('<strong>bold</strong>'));
+      assert.default.strictEqual(out.plainTail, '');
+    });
+    it('T5: empty revealed text returns empty pieces', () => {
+      assert.default.deepStrictEqual(splitRevealedForRender(''), { richHtml: '', plainTail: '' });
+    });
+    it('T6: $$$x$$ follows renderRich display-boundary behavior', () => {
+      const out = splitRevealedForRender('$$$x$$');
+      assert.default.strictEqual(out.plainTail, '');
+      assert.default.strictEqual(out.richHtml, renderRich('$$$x$$'));
+    });
+    it('T7: later unclosed inline math becomes plain tail after earlier closed math', () => {
+      const out = splitRevealedForRender('a $x$ b $y');
+      assert.default.strictEqual(out.richHtml, renderRich('a $x$ b '));
+      assert.default.ok(out.plainTail.includes('$y'));
     });
   });
 }
