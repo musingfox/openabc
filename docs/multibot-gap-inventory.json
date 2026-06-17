@@ -1,29 +1,65 @@
 {
-  "description": "Multi-bot protocol gap inventory for openabc. Reflects current-state witnesses from G2/G3/G4. Each entry names the wall (which Example exposes it), the proposed field to close it, and the door classification.",
+  "description": "Multi-bot protocol gap inventory for openabc. Reflects current-state witnesses from turn-25 w1..w5. Each entry names the wall (which witness test exposes it), the proposed field to close it, and the door classification.",
   "entries": [
     {
       "id": "gap-reply-no-bot-id",
-      "wall": "G2",
+      "category": "routing-key",
+      "wall": "w1_dual_bot_same_conn_unattributable",
       "summary": "GatewayReply carries no bot identity field; the OAB core does not include bot_id/agent_id/sender in the reply schema. The browser cannot tell which bot produced a reply.",
       "proposed_field": "bot_id (string, top-level on GatewayReply)",
       "door": "one-way",
+      "witness_test": "w1_dual_bot_same_conn_unattributable",
       "notes": "Adding bot_id to GatewayReply is an outward schema contract change that requires synchronized updates on both openabc (schema.rs ReplyChannel or GatewayReply) and openab core — a one-way door once any consumer reads this field."
     },
     {
       "id": "gap-multibot-reply-unattributable",
-      "wall": "G3",
+      "category": "routing-key",
+      "wall": "w1_dual_bot_same_conn_unattributable",
       "summary": "When multiple bots (two OAB /ws connections) each dispatch a reply to the same conn_id, the browser push carries only {type, op, text} — there is no source field to distinguish which bot sent which message.",
-      "proposed_field": "source_bot_id (string, injected by dispatch_reply before browser push)",
-      "door": "one-way",
-      "notes": "Injecting source attribution into the browser push JSON is a two-way door internally (a config/tunable on the push serializer), but acquiring the originating bot identity from GatewayReply requires the upstream schema change (gap-reply-no-bot-id) — making end-to-end attribution a one-way door."
+      "proposed_field": "source (string, injected by dispatch_reply before browser push, no schema.rs change needed)",
+      "door": "two-way",
+      "witness_test": "w1_dual_bot_same_conn_unattributable",
+      "notes": "Injecting source attribution into the browser push JSON is a two-way door internally — it is a config/tunable on the push serializer (reply_to_push in native.rs) that does not touch schema.rs or the outward GatewayReply protocol. The upstream identity gap (gap-reply-no-bot-id) is a separate one-way door."
     },
     {
       "id": "gap-no-bot-to-bot-channel",
-      "wall": "G4",
-      "summary": "The native adapter marks all inbound messages as is_bot:false and routes them only to openab core via event_tx (one broadcast call site). There is no dedicated bot↔bot channel — a bot cannot address another bot directly through the native gateway.",
+      "category": "routing-key",
+      "wall": "w5_inbound_is_bot_false_and_single_event_txsend",
+      "summary": "The native adapter marks all inbound messages as is_bot:false and routes them only to openab core via event_tx (one broadcast call site). There is no dedicated bot-to-bot channel — a bot cannot address another bot directly through the native gateway.",
       "proposed_field": "bot_channel_id (string, optional on GatewayEvent.channel) + is_bot:true sender flag",
+      "door": "one-way",
+      "witness_test": "w5_inbound_is_bot_false_and_single_event_txsend",
+      "notes": "Introducing a new routing topology for bot-originated messages (is_bot:true path distinct from the browser broadcast) requires new route logic that openab core would then consume. Once openab core depends on the new routing behavior the change is not reversible without coordination — a one-way door."
+    },
+    {
+      "id": "gap-routing-key-conn-vs-botid",
+      "category": "routing-key",
+      "wall": "w2_senders_keyed_by_conn_only",
+      "summary": "The outbound routing key is conn_id (one entry per browser tab). When multiple bots reply to the same conn_id they share the same mpsc::Sender, making it impossible to route by (conn_id, bot_id) without changing the senders map schema and the outward GatewayReply key.",
+      "proposed_field": "composite routing key (conn_id, bot_id) replacing conn_id in NativeSenders HashMap",
+      "door": "one-way",
+      "witness_test": "w2_senders_keyed_by_conn_only",
+      "notes": "Changing the routing key from conn_id to (conn_id, bot_id) requires changes to schema.rs (GatewayReply must carry bot_id), to openab core (must populate bot_id on every reply), and to all consumers reading the routed push — once any downstream reads the new key the change is not reversible."
+    },
+    {
+      "id": "gap-mpsc-ordering-backpressure",
+      "category": "ordering-back-pressure",
+      "wall": "w3_mpsc_ordering_and_capacity",
+      "summary": "Each browser connection has a dedicated mpsc channel of capacity 64. FIFO ordering is guaranteed within a single connection, but when the channel is full try_send returns TrySendError::Full and the reply is dropped silently. There is no back-pressure signal back to the OAB sender.",
+      "proposed_field": "configurable capacity via OPENABC_PUSH_CHANNEL_CAPACITY env var + drop counter metric",
       "door": "two-way",
-      "notes": "The is_bot flag on SenderInfo already exists in schema.rs; toggling it true for bot-originated messages is a two-way door (reversible config). Adding a dedicated bot↔bot routing path in the native adapter is also a two-way door — it extends the router without breaking existing browser flows."
+      "witness_test": "w3_mpsc_ordering_and_capacity",
+      "notes": "The capacity (64) is a tunable internal constant; changing it or making it configurable is fully reversible. Adding a drop counter is also additive. Neither touches schema.rs or the outward protocol — a two-way door."
+    },
+    {
+      "id": "gap-no-bot-registry",
+      "category": "bot-registry",
+      "wall": "w4_no_bot_registry",
+      "summary": "AppState has no bot registry. dispatch_reply takes only (&NativeSenders, &GatewayReply) — there is no table of known bots, no per-bot state, and no way to track which /ws connections belong to which named agent.",
+      "proposed_field": "bot_registry: Arc<Mutex<HashMap<String, BotInfo>>> in AppState (internal only)",
+      "door": "two-way",
+      "witness_test": "w4_no_bot_registry",
+      "notes": "Adding an internal bot registry to AppState is fully reversible — it does not touch schema.rs, the outward GatewayReply/GatewayEvent protocol, or any consumer outside openabc. A two-way door: the registry can be added and removed without breaking existing flows."
     }
   ]
 }

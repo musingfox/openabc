@@ -579,3 +579,133 @@ async fn e_lag_does_not_kill_oab_connection() {
     browser_ws.close(None).await.ok();
     oab_ws.close(None).await.ok();
 }
+
+/// w1 — dual-bot same-conn unattributable: two OAB /ws connections (bot A and bot B)
+/// each dispatch one GatewayReply to the same conn_id. The browser receives 2 pushes.
+/// Every push must have keys ⊆ {type, op, text} — no source/bot_id/sender attribution.
+#[tokio::test]
+async fn w1_dual_bot_same_conn_unattributable() {
+    let port = spawn_full_app().await;
+    let (mut browser_ws, mut oab_ws_a, conn_id) = connect_browser_and_get_conn_id(port).await;
+
+    // Second OAB /ws (bot B).
+    let oab_url = format!("ws://127.0.0.1:{port}/ws");
+    let (mut oab_ws_b, _) = connect_async(&oab_url).await.expect("OAB /ws B connect failed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Bot A sends a reply with distinct text.
+    let reply_a = serde_json::json!({
+        "schema": "openab.gateway.reply.v1",
+        "reply_to": "evt_w1a",
+        "platform": "native",
+        "channel": { "id": conn_id, "thread_id": null },
+        "content": { "type": "text", "text": "w1-from-bot-a", "attachments": [] },
+        "command": null,
+        "request_id": null,
+        "quote_message_id": null
+    });
+    oab_ws_a.send(TMsg::Text(reply_a.to_string().into())).await.unwrap();
+
+    // Bot B sends a reply with distinct text.
+    let reply_b = serde_json::json!({
+        "schema": "openab.gateway.reply.v1",
+        "reply_to": "evt_w1b",
+        "platform": "native",
+        "channel": { "id": conn_id, "thread_id": null },
+        "content": { "type": "text", "text": "w1-from-bot-b", "attachments": [] },
+        "command": null,
+        "request_id": null,
+        "quote_message_id": null
+    });
+    oab_ws_b.send(TMsg::Text(reply_b.to_string().into())).await.unwrap();
+
+    // Collect 2 text pushes from the browser side.
+    let mut pushes: Vec<serde_json::Value> = Vec::new();
+    while pushes.len() < 2 {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(3), browser_ws.next())
+            .await
+            .expect("w1: timeout waiting for push to browser")
+            .expect("w1: browser ws stream ended")
+            .expect("w1: browser ws error");
+        if let TMsg::Text(t) = msg {
+            let v: serde_json::Value = serde_json::from_str(&t).expect("w1: push must be JSON");
+            pushes.push(v);
+        }
+    }
+
+    // Every push must have keys ⊆ {type, op, text} — no source/bot_id/sender.
+    let allowed: std::collections::HashSet<&str> = ["type", "op", "text"].iter().copied().collect();
+    for (i, push) in pushes.iter().enumerate() {
+        let push_keys: std::collections::HashSet<&str> = push
+            .as_object()
+            .expect("w1: push must be a JSON object")
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        let extra: Vec<&&str> = push_keys.difference(&allowed).collect();
+        assert!(
+            extra.is_empty(),
+            "w1: push[{i}] has unexpected keys {extra:?} — keys must be ⊆ {{type,op,text}} (no source attribution)"
+        );
+    }
+
+    browser_ws.close(None).await.ok();
+    oab_ws_a.close(None).await.ok();
+    oab_ws_b.close(None).await.ok();
+}
+
+/// w5 — inbound is_bot false + single event_tx.send call site:
+/// (a) A browser message produces a GatewayEvent with sender.is_bot == false (behavioral).
+/// (b) The source text of src/native.rs contains exactly one "event_tx.send(" call site
+///     (static assertion derived from the frozen spec — witnesses the single broadcast point).
+#[tokio::test]
+async fn w5_inbound_is_bot_false_and_single_event_txsend() {
+    // (a) Behavioral: browser message → GatewayEvent.sender.is_bot == false.
+    let port = spawn_full_app().await;
+    let (_browser_ws, _oab_ws, _conn_id) = connect_browser_and_get_conn_id(port).await;
+
+    // connect_browser_and_get_conn_id already sent a message and received the GatewayEvent.
+    // We re-do the round-trip here to inspect is_bot directly.
+    let port2 = spawn_full_app().await;
+
+    let oab_url = format!("ws://127.0.0.1:{port2}/ws");
+    let (mut oab_ws, _) = connect_async(&oab_url).await.expect("OAB /ws connect failed");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let browser_url = format!("ws://127.0.0.1:{port2}/native/ws");
+    let (mut browser_ws2, _) = connect_async(&browser_url)
+        .await
+        .expect("browser /native/ws connect failed");
+    browser_ws2
+        .send(TMsg::Text(r#"{"text":"w5-probe"}"#.to_string().into()))
+        .await
+        .unwrap();
+
+    let raw = loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(3), oab_ws.next())
+            .await
+            .expect("w5: timeout waiting for GatewayEvent")
+            .expect("w5: OAB ws stream ended")
+            .expect("w5: OAB ws error");
+        if let TMsg::Text(t) = msg {
+            break t.to_string();
+        }
+    };
+
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("w5: event must be JSON");
+    assert_eq!(
+        v["sender"]["is_bot"], false,
+        "w5(a): GatewayEvent.sender.is_bot must be false for browser-originated messages"
+    );
+
+    // (b) Static: exactly one "event_tx.send(" call site in src/native.rs.
+    let src = include_str!("../src/native.rs");
+    let count = src.matches("event_tx.send(").count();
+    assert_eq!(
+        count, 1,
+        "w5(b): src/native.rs must contain exactly 1 'event_tx.send(' call site, found {count}"
+    );
+
+    browser_ws2.close(None).await.ok();
+    oab_ws.close(None).await.ok();
+}

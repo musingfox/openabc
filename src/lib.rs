@@ -111,164 +111,131 @@ async fn health() -> &'static str {
     "ok"
 }
 
-// ─── G1 / G2 / G3 witness tests ──────────────────────────────────────────────
+// ─── w2 / w3 / w4 — multibot current-state wall unit witnesses ───────────────
 //
 // Placed at the crate root (not inside a named mod) so the lib test binary
-// registers them under the bare names g1_..., g2_..., g3_... — matching the
-// exact-name filter the gate uses, and guaranteeing "1 passed" appears in the
-// first binary output (before the integration binary).
+// registers them under the bare names w2_..., w3_..., w4_... — matching the
+// exact-name filter the gate uses (cargo test --lib <name> -- --exact).
 
+/// w2 — senders map keyed by conn_id only.
+/// Two GatewayReply values share the same channel.id (= conn_id) but differ
+/// in text (simulating two different bots). dispatch_reply uses only conn_id
+/// to look up the mpsc::Sender — so both pushes land on the same receiver.
+/// After both dispatches the senders map still holds exactly 1 entry.
 #[cfg(test)]
 #[tokio::test]
-async fn g1_inbound_multibot_fanout_both_oab_receive_event() {
-    use std::time::Duration;
-    use tokio::net::TcpListener;
-    use tokio_tungstenite::{connect_async, tungstenite::Message as TMsg};
-    use futures_util::{SinkExt, StreamExt};
-
-    std::env::remove_var("OPENABC_WS_TOKEN");
-    let app = build_app().await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let oab_url = format!("ws://127.0.0.1:{port}/ws");
-    let (mut oab_ws_a, _) = connect_async(&oab_url).await.expect("OAB /ws A");
-    let (mut oab_ws_b, _) = connect_async(&oab_url).await.expect("OAB /ws B");
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let browser_url = format!("ws://127.0.0.1:{port}/native/ws");
-    let (mut browser_ws, _) = connect_async(&browser_url).await.expect("browser");
-    browser_ws
-        .send(TMsg::Text(r#"{"text":"fanout-probe"}"#.to_string().into()))
-        .await.unwrap();
-
-    async fn recv_text(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> String {
-        loop {
-            let msg = tokio::time::timeout(std::time::Duration::from_secs(3), ws.next())
-                .await.expect("timeout").expect("stream ended").expect("ws error");
-            if let TMsg::Text(t) = msg { return t.to_string(); }
-        }
-    }
-
-    let raw_a = recv_text(&mut oab_ws_a).await;
-    let raw_b = recv_text(&mut oab_ws_b).await;
-
-    for (label, raw) in [("OAB-A", &raw_a), ("OAB-B", &raw_b)] {
-        let v: serde_json::Value = serde_json::from_str(raw).unwrap();
-        assert_eq!(v["schema"], "openab.gateway.event.v1", "{label}");
-        assert_eq!(v["platform"], "native", "{label}");
-        assert!(v["channel"]["id"].is_string(), "{label}");
-    }
-    let id_a = serde_json::from_str::<serde_json::Value>(&raw_a).unwrap()["channel"]["id"].as_str().unwrap().to_string();
-    let id_b = serde_json::from_str::<serde_json::Value>(&raw_b).unwrap()["channel"]["id"].as_str().unwrap().to_string();
-    assert_eq!(id_a, id_b, "both OAB /ws must see the same conn_id");
-
-    browser_ws.close(None).await.ok();
-    oab_ws_a.close(None).await.ok();
-    oab_ws_b.close(None).await.ok();
-}
-
-#[cfg(test)]
-#[tokio::test]
-async fn g2_reply_has_no_bot_identity_field() {
+async fn w2_senders_keyed_by_conn_only() {
+    use native::{dispatch_reply, NativeSenders};
     use schema::{Content, GatewayReply, ReplyChannel};
-    let reply = GatewayReply {
+    use std::collections::HashMap;
+    use tokio::sync::{mpsc, Mutex};
+
+    let senders: NativeSenders = Arc::new(Mutex::new(HashMap::new()));
+    let (push_tx, mut push_rx) = mpsc::channel::<String>(16);
+
+    let conn_id = "test-conn-xyz".to_string();
+    senders.lock().await.insert(conn_id.clone(), push_tx);
+
+    let make = |text: &str| GatewayReply {
         schema: "openab.gateway.reply.v1".into(),
-        reply_to: "evt_test".into(),
+        reply_to: "evt".into(),
         platform: "native".into(),
-        channel: ReplyChannel { id: "conn-test".into(), thread_id: None },
-        content: Content { content_type: "text".into(), text: "hello".into(), attachments: vec![] },
+        channel: ReplyChannel { id: conn_id.clone(), thread_id: None },
+        content: Content { content_type: "text".into(), text: text.into(), attachments: vec![] },
         command: None,
         request_id: None,
         quote_message_id: None,
     };
-    let v = serde_json::to_value(&reply).expect("serialize");
-    let forbidden = ["bot_id", "agent_id", "sender", "source"];
-    let top_keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
-    for key in &forbidden {
-        assert!(!top_keys.contains(key), "top-level must not contain '{key}' (G2)");
+
+    dispatch_reply(&senders, &make("from-bot-a")).await;
+    dispatch_reply(&senders, &make("from-bot-b")).await;
+
+    assert_eq!(senders.lock().await.len(), 1, "w2: senders map must have exactly 1 entry");
+
+    let msg1 = push_rx.recv().await.expect("w2: first push missing");
+    let msg2 = push_rx.recv().await.expect("w2: second push missing");
+
+    let v1: serde_json::Value = serde_json::from_str(&msg1).unwrap();
+    let v2: serde_json::Value = serde_json::from_str(&msg2).unwrap();
+
+    let texts: std::collections::HashSet<String> = [
+        v1["text"].as_str().unwrap().to_string(),
+        v2["text"].as_str().unwrap().to_string(),
+    ].into();
+    assert!(texts.contains("from-bot-a"), "w2: first bot's text must be received");
+    assert!(texts.contains("from-bot-b"), "w2: second bot's text must be received");
+}
+
+/// w3 — mpsc FIFO ordering and capacity (64).
+/// (a) 64 messages sent in order arrive in the same order.
+/// (b) After the channel is full, try_send returns TrySendError::Full.
+#[cfg(test)]
+#[tokio::test]
+async fn w3_mpsc_ordering_and_capacity() {
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::channel::<String>(64);
+
+    for i in 0..64u32 {
+        tx.send(format!("msg-{i}")).await.expect("w3: send must succeed while not full");
     }
-    if let Some(ch) = v.get("channel").and_then(|c| c.as_object()) {
-        let ch_keys: Vec<&str> = ch.keys().map(|k| k.as_str()).collect();
-        for key in &forbidden {
-            assert!(!ch_keys.contains(key), "channel must not contain '{key}' (G2)");
-        }
+
+    for i in 0..64u32 {
+        let got = rx.recv().await.expect("w3: recv must return a value");
+        assert_eq!(got, format!("msg-{i}"), "w3(a): FIFO ordering violated at index {i}");
+    }
+
+    for i in 0..64u32 {
+        tx.try_send(format!("fill-{i}")).expect("w3(b): pre-fill must succeed");
+    }
+    match tx.try_send("overflow".to_string()) {
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {},
+        other => panic!("w3(b): expected TrySendError::Full, got {other:?}"),
     }
 }
 
+/// w4 — AppState has no bot registry; dispatch_reply takes only two args.
+/// Structural assertion: constructing AppState exhausts its fields (ws_token +
+/// event_tx + native_senders). A closure that calls dispatch_reply with only
+/// (&NativeSenders, &GatewayReply) must compile — no registry arg exists.
 #[cfg(test)]
-#[tokio::test]
-async fn g3_multibot_replies_merge_unattributable() {
-    use std::time::Duration;
-    use tokio::net::TcpListener;
-    use tokio_tungstenite::{connect_async, tungstenite::Message as TMsg};
-    use futures_util::{SinkExt, StreamExt};
+#[test]
+fn w4_no_bot_registry() {
+    use native::NativeSenders;
+    use schema::{Content, GatewayReply, ReplyChannel};
+    use std::collections::HashMap;
+    use tokio::sync::{broadcast, Mutex};
 
-    std::env::remove_var("OPENABC_WS_TOKEN");
-    let app = build_app().await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Connect browser + first OAB ws, get conn_id.
-    let oab_url = format!("ws://127.0.0.1:{port}/ws");
-    let (mut oab_ws_a, _) = connect_async(&oab_url).await.expect("OAB /ws A");
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let browser_url = format!("ws://127.0.0.1:{port}/native/ws");
-    let (mut browser_ws, _) = connect_async(&browser_url).await.expect("browser");
-    browser_ws
-        .send(TMsg::Text(r#"{"text":"hello"}"#.to_string().into()))
-        .await.unwrap();
-    let raw = loop {
-        let msg = tokio::time::timeout(Duration::from_secs(3), oab_ws_a.next())
-            .await.expect("timeout").expect("stream ended").expect("ws error");
-        if let TMsg::Text(t) = msg { break t.to_string(); }
+    let (event_tx, _rx) = broadcast::channel::<String>(4);
+    let senders: NativeSenders = Arc::new(Mutex::new(HashMap::new()));
+    let state = AppState {
+        ws_token: None,
+        event_tx,
+        native_senders: senders.clone(),
     };
-    let conn_id = serde_json::from_str::<serde_json::Value>(&raw).unwrap()["channel"]["id"]
-        .as_str().unwrap().to_string();
+    // Exhaustive destructure: if a bot_registry field were added, this would fail to compile.
+    let AppState { ws_token: _, event_tx: _, native_senders: _ } = state;
 
-    // Second OAB ws (bot B).
-    let (mut oab_ws_b, _) = connect_async(&oab_url).await.expect("OAB /ws B");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Compile-time shape assertion for dispatch_reply signature.
+    // The closure wraps the call but is never invoked.
+    let senders2: NativeSenders = Arc::new(Mutex::new(HashMap::new()));
+    let dummy_reply = GatewayReply {
+        schema: "openab.gateway.reply.v1".into(),
+        reply_to: "evt".into(),
+        platform: "native".into(),
+        channel: ReplyChannel { id: "no-conn".into(), thread_id: None },
+        content: Content { content_type: "text".into(), text: "x".into(), attachments: vec![] },
+        command: None,
+        request_id: None,
+        quote_message_id: None,
+    };
+    let _proof = move || async move { native::dispatch_reply(&senders2, &dummy_reply).await; };
+    let _ = std::hint::black_box(std::mem::size_of_val(&_proof));
 
-    // Bot A and Bot B each send a reply to the same conn_id.
-    for (ws, text, evt) in [
-        (&mut oab_ws_a, "from-bot-a", "evt_a"),
-        (&mut oab_ws_b, "from-bot-b", "evt_b"),
-    ] {
-        let reply = serde_json::json!({
-            "schema": "openab.gateway.reply.v1",
-            "reply_to": evt,
-            "platform": "native",
-            "channel": { "id": conn_id, "thread_id": null },
-            "content": { "type": "text", "text": text, "attachments": [] },
-            "command": null, "request_id": null, "quote_message_id": null
-        });
-        ws.send(TMsg::Text(reply.to_string().into())).await.unwrap();
-    }
-
-    let mut pushes: Vec<serde_json::Value> = Vec::new();
-    while pushes.len() < 2 {
-        let msg = tokio::time::timeout(Duration::from_secs(3), browser_ws.next())
-            .await.expect("timeout").expect("stream ended").expect("ws error");
-        if let TMsg::Text(t) = msg {
-            pushes.push(serde_json::from_str(&t).expect("push must be JSON"));
-        }
-    }
-
-    let allowed: std::collections::HashSet<&str> = ["type", "op", "text"].iter().copied().collect();
-    for (i, push) in pushes.iter().enumerate() {
-        let push_keys: std::collections::HashSet<&str> = push.as_object().unwrap().keys().map(|k| k.as_str()).collect();
-        let extra: Vec<&&str> = push_keys.difference(&allowed).collect();
-        assert!(extra.is_empty(), "push[{i}] has unexpected keys {extra:?} — must be ⊆ {{type,op,text}} (G3)");
-    }
-
-    browser_ws.close(None).await.ok();
-    oab_ws_a.close(None).await.ok();
-    oab_ws_b.close(None).await.ok();
+    // Verify the senders map is keyed by conn_id strings only (no bot entries pre-registered).
+    // Use blocking_lock since w4 is a sync test.
+    let guard = senders.blocking_lock();
+    assert!(guard.is_empty(), "w4: fresh senders map must be empty (no bot entries pre-registered)");
 }
 
 /// Build the openabc application.

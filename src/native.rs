@@ -552,4 +552,5 @@ mod tests {
         let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
         assert_eq!(ct, "image/png");
     }
+
 }
