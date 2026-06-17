@@ -370,6 +370,29 @@ if (isBun) {
     });
   });
 
+  describe('closed region mid-stream rendering', () => {
+    it('T1: closed inline math renders before the whole message is done', () => {
+      const out = splitRevealedForRender('The value $x$ is important and the next part is still');
+      expect(/class="katex/.test(out.richHtml)).toBe(true);
+      expect(out.plainTail).toBe('');
+    });
+    it('T2: closed bold renders while an unclosed fence stays raw', () => {
+      const out = splitRevealedForRender('**bold** and ```py\ncode');
+      expect(out.richHtml).toContain('<strong>bold</strong>');
+      expect(/<pre class/.test(out.plainTail)).toBe(false);
+    });
+    it('T3: closed display math renders while later unclosed inline math stays raw', () => {
+      const out = splitRevealedForRender('$$a$$ and $b');
+      expect(/class="katex/.test(out.richHtml)).toBe(true);
+      expect(out.plainTail).toBe('$b');
+    });
+    it('T4: paired price dollars preserve existing greedy inline-math behavior', () => {
+      const out = splitRevealedForRender('I paid $5 and $10');
+      expect(out.richHtml).toContain('class="katex');
+      expect(out.plainTail).toBe('');
+    });
+  });
+
   describe('splitRevealedForRender', () => {
     it('T1: closed bold renders rich and has no plain tail', () => {
       const out = splitRevealedForRender('Hello **world**');
@@ -753,6 +776,29 @@ if (isBun) {
     it('E5: onload= via svg in mermaid source is absent from output', () => {
       const out = renderRich('```mermaid\ngraph TD;A["><svg onload=alert(1)"]-->B\n```');
       assert.default.ok(!/onload=/i.test(out), 'must not contain onload= in: ' + out);
+    });
+  });
+
+  describe('closed region mid-stream rendering', () => {
+    it('T1: closed inline math renders before the whole message is done', () => {
+      const out = splitRevealedForRender('The value $x$ is important and the next part is still');
+      assert.default.ok(/class="katex/.test(out.richHtml));
+      assert.default.strictEqual(out.plainTail, '');
+    });
+    it('T2: closed bold renders while an unclosed fence stays raw', () => {
+      const out = splitRevealedForRender('**bold** and ```py\ncode');
+      assert.default.ok(out.richHtml.includes('<strong>bold</strong>'));
+      assert.default.ok(!/<pre class/.test(out.plainTail));
+    });
+    it('T3: closed display math renders while later unclosed inline math stays raw', () => {
+      const out = splitRevealedForRender('$$a$$ and $b');
+      assert.default.ok(/class="katex/.test(out.richHtml));
+      assert.default.strictEqual(out.plainTail, '$b');
+    });
+    it('T4: paired price dollars preserve existing greedy inline-math behavior', () => {
+      const out = splitRevealedForRender('I paid $5 and $10');
+      assert.default.ok(out.richHtml.includes('class="katex'));
+      assert.default.strictEqual(out.plainTail, '');
     });
   });
 
