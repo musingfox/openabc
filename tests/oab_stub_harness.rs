@@ -8,14 +8,9 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message as TMsg};
 use futures_util::{SinkExt, StreamExt};
 
-// Re-use the stub core via the binary module.
-// We reference the file directly so the harness can call run_stub_session.
-// The bin crate is compiled as part of the workspace, so we include the
-// module inline via path attribute.
-#[path = "../src/bin/oab_stub.rs"]
-mod oab_stub;
-
-use oab_stub::stub_core;
+// Stub core lives in the library, so both the binary and this harness consume
+// it from `openabc::stub_core` — no `#[path]` include of the binary.
+use openabc::stub_core;
 
 /// Start a real openabc server on an ephemeral port; return the port.
 async fn spawn_full_app() -> u16 {

@@ -1,5 +1,6 @@
 pub mod native;
 pub mod schema;
+pub mod stub_core;
 
 use axum::{
     extract::State,
