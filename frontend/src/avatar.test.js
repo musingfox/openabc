@@ -445,6 +445,38 @@ if (isBun) {
     });
   });
 
+  describe('App.svelte bubble render branch', () => {
+    function renderAgentBubbleForTest(text, charsShown) {
+      if (shouldRenderRich(isRevealComplete(text, charsShown))) {
+        return { mode: 'complete', richHtml: renderRich(text), plainTail: '' };
+      }
+      return { mode: 'streaming', ...splitRevealedForRender(revealText(text, charsShown)) };
+    }
+
+    it('T1: streaming split renders the closed prefix and preserves the raw revealed tail exactly', () => {
+      const revealed = 'Intro **done** then $streaming';
+      const fullText = revealed + ' later';
+      const split = splitRevealedForRender(revealText(fullText, revealed.length));
+      expect(split.richHtml).toBe(renderRich('Intro **done** then '));
+      expect(split.plainTail).toBe('$streaming');
+    });
+    it('T2: incomplete reveal uses split output while complete reveal uses full renderRich', () => {
+      const text = 'Intro **done** then $streaming';
+      const streaming = renderAgentBubbleForTest(text, text.length - 3);
+      expect(streaming.mode).toBe('streaming');
+      expect(streaming.richHtml).toBe(renderRich('Intro **done** then '));
+      expect(streaming.plainTail).toBe('$stream');
+      const complete = renderAgentBubbleForTest(text, text.length);
+      expect(complete.mode).toBe('complete');
+      expect(complete.richHtml).toBe(renderRich(text));
+      expect(complete.plainTail).toBe('');
+    });
+    it('T3: shouldRenderRich remains exported with true/false behavior', () => {
+      expect(shouldRenderRich(true)).toBe(true);
+      expect(shouldRenderRich(false)).toBe(false);
+    });
+  });
+
   describe('splitRevealedForRender', () => {
     it('T1: closed bold renders rich and has no plain tail', () => {
       const out = splitRevealedForRender('Hello **world**');
@@ -903,6 +935,38 @@ if (isBun) {
       assert.default.strictEqual(out.plainTail, '$x');
       assert.default.ok(!out.plainTail.includes('�'));
       assert.default.ok(out.richHtml.includes('👨‍💻'));
+    });
+  });
+
+  describe('App.svelte bubble render branch', () => {
+    function renderAgentBubbleForTest(text, charsShown) {
+      if (shouldRenderRich(isRevealComplete(text, charsShown))) {
+        return { mode: 'complete', richHtml: renderRich(text), plainTail: '' };
+      }
+      return { mode: 'streaming', ...splitRevealedForRender(revealText(text, charsShown)) };
+    }
+
+    it('T1: streaming split renders the closed prefix and preserves the raw revealed tail exactly', () => {
+      const revealed = 'Intro **done** then $streaming';
+      const fullText = revealed + ' later';
+      const split = splitRevealedForRender(revealText(fullText, revealed.length));
+      assert.default.strictEqual(split.richHtml, renderRich('Intro **done** then '));
+      assert.default.strictEqual(split.plainTail, '$streaming');
+    });
+    it('T2: incomplete reveal uses split output while complete reveal uses full renderRich', () => {
+      const text = 'Intro **done** then $streaming';
+      const streaming = renderAgentBubbleForTest(text, text.length - 3);
+      assert.default.strictEqual(streaming.mode, 'streaming');
+      assert.default.strictEqual(streaming.richHtml, renderRich('Intro **done** then '));
+      assert.default.strictEqual(streaming.plainTail, '$stream');
+      const complete = renderAgentBubbleForTest(text, text.length);
+      assert.default.strictEqual(complete.mode, 'complete');
+      assert.default.strictEqual(complete.richHtml, renderRich(text));
+      assert.default.strictEqual(complete.plainTail, '');
+    });
+    it('T3: shouldRenderRich remains exported with true/false behavior', () => {
+      assert.default.strictEqual(shouldRenderRich(true), true);
+      assert.default.strictEqual(shouldRenderRich(false), false);
     });
   });
 

@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import mermaid from 'mermaid';
-  import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich } from './avatar.js';
+  import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender } from './avatar.js';
 
   // Agent avatar state — driven by WebSocket push from openabc /native/ws.
   let agentState = $state('idle');
@@ -176,7 +176,8 @@
             {#if shouldRenderRich(isRevealComplete(m.text, revealState[i] ?? 0))}
               {@html renderRich(m.text)}
             {:else}
-              {revealText(m.text, revealState[i] ?? 0)}
+              {@const revealed = splitRevealedForRender(revealText(m.text, revealState[i] ?? 0))}
+              {@html revealed.richHtml}{revealed.plainTail}
             {/if}
           {:else}
             {m.text}
