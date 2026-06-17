@@ -28,8 +28,11 @@ pub mod stub_core {
     /// One stub bot session: connect to ws_url, process GatewayEvents and echo
     /// GatewayReply back for each one.
     ///
-    /// - `max_turns`: `None` = loop forever until the connection closes or errors;
-    ///   `Some(k)` = process exactly k events then close and return.
+    /// - `max_turns`: `None` = loop forever; on an idle timeout (no frame for 5s)
+    ///   the loop continues waiting for the next frame. The session only ends when
+    ///   the connection is closed by the peer (`Ok(None)`) or a connection error
+    ///   occurs. `Some(k)` = process exactly k events then close and return; a
+    ///   timeout while waiting for the k-th event is treated as an error.
     ///
     /// Returns a `Vec<(GatewayEvent, GatewayReply)>` of all event/reply pairs
     /// recorded during the session (in order).
@@ -65,12 +68,11 @@ pub mod stub_core {
                 .await;
 
                 match next {
-                    Err(_) => {
-                        // Timeout waiting for next event.
+                    Err(_elapsed) => {
+                        // Idle timeout waiting for next frame.
                         if max_turns.is_none() {
-                            // In forever mode, a timeout on next event is just idle — keep waiting.
-                            // But to avoid a hot-spin on closed connection, treat this as done.
-                            return Ok(results);
+                            // In forever mode, an idle timeout is normal — keep waiting.
+                            continue;
                         } else {
                             return Err(anyhow::anyhow!(
                                 "bot{bot_index}: timeout waiting for GatewayEvent (turn {})",
@@ -79,12 +81,12 @@ pub mod stub_core {
                         }
                     }
                     Ok(None) => {
-                        // Connection closed.
+                        // Connection closed by peer.
                         return Ok(results);
                     }
                     Ok(Some(Err(e))) => {
                         if max_turns.is_none() {
-                            // Forever mode: connection error = done.
+                            // Forever mode: connection error = session done.
                             return Ok(results);
                         } else {
                             return Err(anyhow::anyhow!("bot{bot_index}: ws error: {e}"));
@@ -177,22 +179,48 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("oab_stub: connecting {n} persistent bots → {ws_url}");
 
-    // Spawn N concurrent bot sessions; each runs forever (max_turns=None)
-    // until the connection is closed or an error occurs.
+    let mut join_set = tokio::task::JoinSet::new();
+
     for i in 0..n {
         let url = ws_url.clone();
-        tokio::spawn(async move {
-            match stub_core::run_stub_session(&url, i, None, None).await {
-                Ok(pairs) => {
-                    tracing::info!("[bot{i}] session ended after {} turns", pairs.len());
-                }
-                Err(e) => eprintln!("[bot{i}] error: {e}"),
-            }
+        join_set.spawn(async move {
+            let result = stub_core::run_stub_session(&url, i, None, None).await;
+            (i, result)
         });
     }
 
-    // Wait forever until Ctrl-C.
-    tokio::signal::ctrl_c().await.ok();
-    tracing::info!("oab_stub: received ctrl_c, shutting down");
-    Ok(())
+    // Drain all bot handles; log each disconnection as it happens.
+    // Also allow Ctrl-C to trigger a clean shutdown.
+    loop {
+        tokio::select! {
+            maybe = join_set.join_next() => {
+                match maybe {
+                    None => {
+                        // All bots done.
+                        break;
+                    }
+                    Some(Ok((i, Ok(pairs)))) => {
+                        tracing::warn!("bot{i} disconnected after {} turns", pairs.len());
+                    }
+                    Some(Ok((i, Err(e)))) => {
+                        tracing::error!("bot{i} disconnected with error: {e}");
+                    }
+                    Some(Err(e)) => {
+                        tracing::error!("bot task panicked: {e}");
+                    }
+                }
+                if join_set.is_empty() {
+                    break;
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("oab_stub: received ctrl_c, shutting down");
+                join_set.abort_all();
+                break;
+            }
+        }
+    }
+
+    tracing::warn!("all bots disconnected");
+    std::process::exit(1);
 }

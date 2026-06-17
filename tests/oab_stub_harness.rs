@@ -226,6 +226,127 @@ async fn s4_s5_multi_bot_distinguishable() {
     browser_ws.close(None).await.ok();
 }
 
+/// F1 — none-forever-survives-idle-gap: N=2 bots on None-mode (forever) sessions
+/// survive a real 7s idle gap; SAME browser connection (no reconnect) sends
+/// round-B after the gap and still receives N replies from the bots.
+/// Asserts !handle.is_finished() before abort to witness session still alive.
+#[tokio::test]
+async fn f1_none_forever() {
+    const N: usize = 2;
+    let port = spawn_full_app().await;
+    let ws_url = format!("ws://127.0.0.1:{port}/ws");
+    let browser_url = format!("ws://127.0.0.1:{port}/native/ws");
+
+    // Spawn N bots in None (forever) mode; hold the JoinHandles.
+    let mut bot_handles = Vec::with_capacity(N);
+    for i in 0..N {
+        let url = ws_url.clone();
+        bot_handles.push(tokio::spawn(async move {
+            stub_core::run_stub_session(&url, i, None, None).await
+        }));
+    }
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    // Browser connects once; keep the connection open across BOTH rounds.
+    let (mut browser_ws, _) = connect_async(&browser_url)
+        .await
+        .expect("f1: browser /native/ws connect failed");
+
+    // --- Round A ---
+    browser_ws
+        .send(TMsg::Text(r#"{"text":"round-A"}"#.to_string().into()))
+        .await
+        .unwrap();
+
+    // Collect N pushes for round-A.
+    let mut round_a_pushes: Vec<serde_json::Value> = Vec::new();
+    while round_a_pushes.len() < N {
+        let msg = tokio::time::timeout(Duration::from_secs(5), browser_ws.next())
+            .await
+            .expect("f1: timeout waiting for round-A push")
+            .expect("f1: browser ws stream ended during round-A")
+            .expect("f1: browser ws error during round-A");
+        if let TMsg::Text(t) = msg {
+            let v: serde_json::Value =
+                serde_json::from_str(&t).expect("f1: round-A push must be JSON");
+            round_a_pushes.push(v);
+        }
+    }
+    assert_eq!(round_a_pushes.len(), N, "f1: must receive N round-A pushes");
+
+    // Real idle sleep that crosses the 5s idle timeout threshold in the stub.
+    tokio::time::sleep(Duration::from_secs(7)).await;
+
+    // All bot sessions must still be alive — the idle timeout must NOT have
+    // caused them to close.
+    for (i, h) in bot_handles.iter().enumerate() {
+        assert!(
+            !h.is_finished(),
+            "f1: bot{i} session finished during idle gap — None-mode timeout must continue, not return"
+        );
+    }
+
+    // --- Round B (SAME browser connection, no reconnect) ---
+    browser_ws
+        .send(TMsg::Text(r#"{"text":"round-B"}"#.to_string().into()))
+        .await
+        .expect("f1: failed to send round-B on existing connection");
+
+    // Collect N pushes for round-B.
+    let mut round_b_pushes: Vec<serde_json::Value> = Vec::new();
+    while round_b_pushes.len() < N {
+        let msg = tokio::time::timeout(Duration::from_secs(5), browser_ws.next())
+            .await
+            .expect("f1: timeout waiting for round-B push — bot session closed during idle gap")
+            .expect("f1: browser ws stream ended during round-B")
+            .expect("f1: browser ws error during round-B");
+        if let TMsg::Text(t) = msg {
+            let v: serde_json::Value =
+                serde_json::from_str(&t).expect("f1: round-B push must be JSON");
+            round_b_pushes.push(v);
+        }
+    }
+
+    // Verify round-B pushes.
+    let mut round_b_texts: Vec<&str> = Vec::new();
+    for (i, push) in round_b_pushes.iter().enumerate() {
+        assert_eq!(
+            push["type"], "message",
+            "f1: round-B push[{i}] type must be 'message'"
+        );
+        let text = push["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("round-B"),
+            "f1: round-B push[{i}] text must contain 'round-B'; got {text:?}"
+        );
+        assert!(
+            !text.contains("round-A"),
+            "f1: round-B push[{i}] text must NOT contain 'round-A'; got {text:?}"
+        );
+        let has_prefix = text.contains("[bot0]") || text.contains("[bot1]");
+        assert!(
+            has_prefix,
+            "f1: round-B push[{i}] text must have [bot0] or [bot1] prefix; got {text:?}"
+        );
+        round_b_texts.push(text);
+    }
+
+    // N texts must be mutually distinct.
+    let unique: std::collections::HashSet<&&str> = round_b_texts.iter().collect();
+    assert_eq!(
+        unique.len(),
+        N,
+        "f1: round-B texts must be mutually distinct (got: {round_b_texts:?})"
+    );
+
+    // Abort background tasks and clean up.
+    for h in bot_handles {
+        h.abort();
+    }
+    browser_ws.close(None).await.ok();
+}
+
 /// E1 — multi-round witness: N=2 bots on persistent core (max_turns=Some(2)),
 /// browser sends round-A → N replies; SAME connection sends round-B → N replies,
 /// each type==message, text has round-B & not round-A, has [botX] prefix,
