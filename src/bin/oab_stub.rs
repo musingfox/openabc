@@ -1,7 +1,21 @@
 //! oab_stub — minimal openab stub dev-harness.
 //!
-//! Connects N /ws sessions to openabc, receives GatewayEvent, and echoes
+//! Connects N `/ws` sessions to openabc, receives GatewayEvent, and echoes
 //! GatewayReply back with a per-bot seq prefix.
+//!
+//! # Startup order
+//!
+//! 1. Start openabc first: `cargo run` (listens on `OPENABC_LISTEN`, default
+//!    `127.0.0.1:8080`).
+//! 2. Then run the stub: `cargo run --bin oab_stub`.
+//!
+//! # Environment variables
+//!
+//! | Variable           | Default           | Description                                      |
+//! |--------------------|-------------------|--------------------------------------------------|
+//! | `OAB_STUB_BOTS`    | `2`               | Number of persistent bot connections to open.    |
+//! | `OPENABC_LISTEN`   | `127.0.0.1:8080`  | Host:port of the running openabc instance.       |
+//! | `OPENABC_WS_TOKEN` | *(unset)*         | If set, appended as `?token=<value>` on `/ws`.   |
 //!
 //! The core logic is in `stub_core::run_stub_session` — directly callable
 //! from integration tests without spawning a subprocess.
@@ -11,8 +25,14 @@ pub mod stub_core {
     use openabc::schema::{Content, GatewayEvent, GatewayReply, ReplyChannel};
     use tokio_tungstenite::{connect_async, tungstenite::Message as TMsg};
 
-    /// One stub bot session: connect to ws_url, receive one GatewayEvent,
-    /// send one GatewayReply, then return the event received and the reply sent.
+    /// One stub bot session: connect to ws_url, process GatewayEvents and echo
+    /// GatewayReply back for each one.
+    ///
+    /// - `max_turns`: `None` = loop forever until the connection closes or errors;
+    ///   `Some(k)` = process exactly k events then close and return.
+    ///
+    /// Returns a `Vec<(GatewayEvent, GatewayReply)>` of all event/reply pairs
+    /// recorded during the session (in order).
     ///
     /// `bot_index` drives the distinguishing prefix in reply text.
     /// `reply_text_fn` maps (bot_index, original_event_text) → reply text;
@@ -20,62 +40,103 @@ pub mod stub_core {
     pub async fn run_stub_session(
         ws_url: &str,
         bot_index: usize,
+        max_turns: Option<usize>,
         reply_text_fn: Option<&(dyn Fn(usize, &str) -> String + Send + Sync)>,
-    ) -> anyhow::Result<(GatewayEvent, GatewayReply)> {
+    ) -> anyhow::Result<Vec<(GatewayEvent, GatewayReply)>> {
         let (mut ws, _) = connect_async(ws_url)
             .await
             .map_err(|e| anyhow::anyhow!("stub bot{bot_index} connect failed: {e}"))?;
 
-        // Receive until we get a text GatewayEvent.
-        let event: GatewayEvent = loop {
-            let msg = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                ws.next(),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("bot{bot_index}: timeout waiting for GatewayEvent"))?
-            .ok_or_else(|| anyhow::anyhow!("bot{bot_index}: ws stream ended before event"))?
-            .map_err(|e| anyhow::anyhow!("bot{bot_index}: ws error: {e}"))?;
+        let mut results = Vec::new();
 
-            if let TMsg::Text(t) = msg {
-                let ev: GatewayEvent = serde_json::from_str(&t)
-                    .map_err(|e| anyhow::anyhow!("bot{bot_index}: bad event JSON: {e}"))?;
-                break ev;
+        loop {
+            if let Some(k) = max_turns {
+                if results.len() >= k {
+                    break;
+                }
             }
-        };
 
-        let conn_id = event.channel.id.clone();
-        let echo_text = match reply_text_fn {
-            Some(f) => f(bot_index, &event.content.text),
-            None => format!("[bot{bot_index}] {}", event.content.text),
-        };
+            // Receive until we get a text GatewayEvent.
+            let event: GatewayEvent = loop {
+                let next = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    ws.next(),
+                )
+                .await;
 
-        let reply = GatewayReply {
-            schema: "openab.gateway.reply.v1".into(),
-            reply_to: event.event_id.clone(),
-            platform: "native".into(),
-            channel: ReplyChannel { id: conn_id, thread_id: None },
-            content: Content {
-                content_type: "text".into(),
-                text: echo_text,
-                attachments: vec![],
-            },
-            command: None,
-            request_id: None,
-            quote_message_id: None,
-        };
+                match next {
+                    Err(_) => {
+                        // Timeout waiting for next event.
+                        if max_turns.is_none() {
+                            // In forever mode, a timeout on next event is just idle — keep waiting.
+                            // But to avoid a hot-spin on closed connection, treat this as done.
+                            return Ok(results);
+                        } else {
+                            return Err(anyhow::anyhow!(
+                                "bot{bot_index}: timeout waiting for GatewayEvent (turn {})",
+                                results.len() + 1
+                            ));
+                        }
+                    }
+                    Ok(None) => {
+                        // Connection closed.
+                        return Ok(results);
+                    }
+                    Ok(Some(Err(e))) => {
+                        if max_turns.is_none() {
+                            // Forever mode: connection error = done.
+                            return Ok(results);
+                        } else {
+                            return Err(anyhow::anyhow!("bot{bot_index}: ws error: {e}"));
+                        }
+                    }
+                    Ok(Some(Ok(TMsg::Text(t)))) => {
+                        let ev: GatewayEvent = serde_json::from_str(&t)
+                            .map_err(|e| anyhow::anyhow!("bot{bot_index}: bad event JSON: {e}"))?;
+                        break ev;
+                    }
+                    Ok(Some(Ok(_other))) => {
+                        // Non-text frame; ignore and keep reading.
+                        continue;
+                    }
+                }
+            };
 
-        ws.send(TMsg::Text(serde_json::to_string(&reply)?.into()))
-            .await
-            .map_err(|e| anyhow::anyhow!("bot{bot_index}: send reply failed: {e}"))?;
+            let conn_id = event.channel.id.clone();
+            let echo_text = match reply_text_fn {
+                Some(f) => f(bot_index, &event.content.text),
+                None => format!("[bot{bot_index}] {}", event.content.text),
+            };
+
+            let reply = GatewayReply {
+                schema: "openab.gateway.reply.v1".into(),
+                reply_to: event.event_id.clone(),
+                platform: "native".into(),
+                channel: ReplyChannel { id: conn_id, thread_id: None },
+                content: Content {
+                    content_type: "text".into(),
+                    text: echo_text,
+                    attachments: vec![],
+                },
+                command: None,
+                request_id: None,
+                quote_message_id: None,
+            };
+
+            ws.send(TMsg::Text(serde_json::to_string(&reply)?.into()))
+                .await
+                .map_err(|e| anyhow::anyhow!("bot{bot_index}: send reply failed: {e}"))?;
+
+            results.push((event, reply));
+        }
 
         ws.close(None).await.ok();
-        Ok((event, reply))
+        Ok(results)
     }
 
     /// Run N stub sessions concurrently against ws_url.
-    /// Each session waits for one GatewayEvent then echoes with "[botN] " prefix.
-    /// Returns vec of (event, reply) in bot-index order.
+    /// Each session processes one GatewayEvent then echoes with "[botN] " prefix.
+    /// Returns vec of (event, reply) per bot (first turn only).
     pub async fn run_multi_bot(
         ws_url: &str,
         n: usize,
@@ -84,12 +145,15 @@ pub mod stub_core {
         for i in 0..n {
             let url = ws_url.to_string();
             handles.push(tokio::spawn(async move {
-                run_stub_session(&url, i, None).await
+                run_stub_session(&url, i, Some(1), None).await
             }));
         }
         let mut results = Vec::with_capacity(n);
         for h in handles {
-            results.push(h.await??);
+            let pairs = h.await??;
+            let first = pairs.into_iter().next()
+                .ok_or_else(|| anyhow::anyhow!("run_multi_bot: bot got no events"))?;
+            results.push(first);
         }
         Ok(results)
     }
@@ -111,26 +175,24 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
 
-    tracing::info!("oab_stub: connecting {n} bots → {ws_url}");
+    tracing::info!("oab_stub: connecting {n} persistent bots → {ws_url}");
 
-    // Spawn N concurrent bot sessions; each blocks until one event arrives.
-    let mut handles = Vec::with_capacity(n);
+    // Spawn N concurrent bot sessions; each runs forever (max_turns=None)
+    // until the connection is closed or an error occurs.
     for i in 0..n {
         let url = ws_url.clone();
-        handles.push(tokio::spawn(async move {
-            match stub_core::run_stub_session(&url, i, None).await {
-                Ok((ev, reply)) => {
-                    println!(
-                        "[bot{i}] received event channel={} text={:?}; replied text={:?}",
-                        ev.channel.id, ev.content.text, reply.content.text
-                    );
+        tokio::spawn(async move {
+            match stub_core::run_stub_session(&url, i, None, None).await {
+                Ok(pairs) => {
+                    tracing::info!("[bot{i}] session ended after {} turns", pairs.len());
                 }
                 Err(e) => eprintln!("[bot{i}] error: {e}"),
             }
-        }));
+        });
     }
-    for h in handles {
-        h.await.ok();
-    }
+
+    // Wait forever until Ctrl-C.
+    tokio::signal::ctrl_c().await.ok();
+    tracing::info!("oab_stub: received ctrl_c, shutting down");
     Ok(())
 }
