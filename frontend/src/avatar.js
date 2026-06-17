@@ -1,6 +1,7 @@
 import { marked } from 'marked';
 import katex from 'katex';
 import DOMPurify from 'isomorphic-dompurify';
+import hljs from 'highlight.js/lib/common';
 
 // Module-level cached Intl.Segmenter singleton (grapheme granularity).
 const _segmenter = (typeof Intl !== 'undefined' && typeof Intl.Segmenter !== 'undefined')
@@ -213,7 +214,23 @@ export function renderRich(text) {
       const escapedSrc = sanitizedSrc.replace(/"/g, '&quot;');
       return `<div class="mermaid-pending" data-mermaid="${encoded}" data-mermaid-src="${escapedSrc}"></div>`;
     }
-    return originalCode(token);
+    // Non-mermaid: syntax-highlight via highlight.js (common-languages subset).
+    // hljs escapes the code text, so the output is safe; DOMPurify (allowing
+    // span + class) is defense-in-depth. Fall back to auto-detection when the
+    // fence has no/unknown language tag.
+    const lower = (lang || '').toLowerCase();
+    let highlighted;
+    try {
+      highlighted = (lower && hljs.getLanguage(lower))
+        ? hljs.highlight(codeText, { language: lower, ignoreIllegals: true }).value
+        : hljs.highlightAuto(codeText).value;
+    } catch {
+      // Never break rendering on a highlighter error — fall back to escaped code.
+      highlighted = codeText
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    const langClass = lower ? ` language-${lower}` : '';
+    return `<pre><code class="hljs${langClass}">${highlighted}</code></pre>`;
   };
 
   let html = marked(processed, { renderer });

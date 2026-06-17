@@ -326,14 +326,49 @@
   .bubble :global(ol) { margin: 0.4em 0; padding-left: 1.4em; }
   .bubble :global(li) { margin: 0.2em 0; }
   .bubble :global(a) { color: var(--accent, #aa3bff); }
+  /* Code blocks always use a dark surface so the single dark highlight.js
+     theme (atom-one-dark) reads correctly in both light and dark UI modes. */
   .bubble :global(pre) {
-    background: var(--code-bg, #1f2028);
+    background: #1f2028;
     padding: 10px 14px;
     border-radius: 8px;
     overflow-x: auto;
     margin: 0.5em 0;
   }
-  .bubble :global(pre code) { background: none; padding: 0; }
+  /* Counter the global scaffold `code { display: inline-flex }` so multi-line
+     highlighted code keeps normal block flow; reset inline-code chrome too. */
+  .bubble :global(pre code) {
+    display: block;
+    background: none;
+    padding: 0;
+    color: #abb2bf;
+    font-family: var(--mono, monospace);
+    font-size: 0.9em;
+    line-height: 1.5;
+  }
+  /* Markdown tables: GFM emits real <table>; give it borders + padding so it
+     reads as a table rather than cramped unstyled text. */
+  .bubble :global(table) {
+    border-collapse: collapse;
+    margin: 0.5em 0;
+    font-size: 0.95em;
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .bubble :global(th),
+  .bubble :global(td) {
+    border: 1px solid var(--border, #2e303a);
+    padding: 6px 10px;
+    text-align: left;
+  }
+  .bubble :global(th) {
+    background: var(--accent-bg, rgba(170, 59, 255, 0.12));
+    font-weight: 600;
+  }
+  .bubble :global(tr:nth-child(even) td) {
+    background: rgba(127, 127, 127, 0.06);
+  }
   .bubble :global(blockquote) {
     margin: 0.5em 0;
     padding-left: 12px;

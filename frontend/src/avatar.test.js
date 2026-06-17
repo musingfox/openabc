@@ -291,6 +291,31 @@ if (isBun) {
     });
   });
 
+  describe('renderRich highlight.js + table (E-HL/E-TBL)', () => {
+    it('E-HL: fenced code with lang produces highlight.js spans', () => {
+      const out = renderRich('```js\nconst x = 1;\n```');
+      expect(/<code class="hljs/.test(out)).toBe(true);
+      expect(/<span class="hljs-/.test(out)).toBe(true);
+    });
+    it('E-HL: code block with no lang still renders <pre><code class="hljs"', () => {
+      expect(/<pre><code class="hljs/.test(renderRich('```\nplain text\n```'))).toBe(true);
+    });
+    it('E-HL: dangerous HTML in a code fence stays inert (no live tag)', () => {
+      expect(/<img\s/i.test(renderRich('```html\n<img src=x onerror=alert(1)>\n```'))).toBe(false);
+    });
+    it('E-TBL: GFM table produces <table> with <th> and <td>', () => {
+      const out = renderRich('| A | B |\n| --- | --- |\n| 1 | 2 |');
+      expect(/<table/.test(out)).toBe(true);
+      expect(/<th[ >]/.test(out)).toBe(true);
+      expect(/<td[ >]/.test(out)).toBe(true);
+    });
+    it('E-TBL: table cell with inline math renders KaTeX', () => {
+      const out = renderRich('| x |\n| --- |\n| $E=mc^2$ |');
+      expect(/<table/.test(out)).toBe(true);
+      expect(/class="katex/.test(out)).toBe(true);
+    });
+  });
+
   describe('renderRich XSS style policy (E-XSS-STYLE)', () => {
     it('E-XSS-STYLE: $$\\frac{a}{b}$$ katex markup is present', () => {
       expect(/class="katex/.test(renderRich('$$\\frac{a}{b}$$'))).toBe(true);
@@ -783,6 +808,31 @@ if (isBun) {
     });
     it('E-COEX: shouldRenderRich(false) === false', () => {
       assert.default.strictEqual(shouldRenderRich(false), false);
+    });
+  });
+
+  describe('renderRich highlight.js + table (E-HL/E-TBL)', () => {
+    it('E-HL: fenced code with lang produces highlight.js spans', () => {
+      const out = renderRich('```js\nconst x = 1;\n```');
+      assert.default.ok(/<code class="hljs/.test(out));
+      assert.default.ok(/<span class="hljs-/.test(out));
+    });
+    it('E-HL: code block with no lang still renders <pre><code class="hljs"', () => {
+      assert.default.ok(/<pre><code class="hljs/.test(renderRich('```\nplain text\n```')));
+    });
+    it('E-HL: dangerous HTML in a code fence stays inert (no live tag)', () => {
+      assert.default.ok(!/<img\s/i.test(renderRich('```html\n<img src=x onerror=alert(1)>\n```')));
+    });
+    it('E-TBL: GFM table produces <table> with <th> and <td>', () => {
+      const out = renderRich('| A | B |\n| --- | --- |\n| 1 | 2 |');
+      assert.default.ok(/<table/.test(out));
+      assert.default.ok(/<th[ >]/.test(out));
+      assert.default.ok(/<td[ >]/.test(out));
+    });
+    it('E-TBL: table cell with inline math renders KaTeX', () => {
+      const out = renderRich('| x |\n| --- |\n| $E=mc^2$ |');
+      assert.default.ok(/<table/.test(out));
+      assert.default.ok(/class="katex/.test(out));
     });
   });
 
