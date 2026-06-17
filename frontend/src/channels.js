@@ -188,6 +188,20 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
   }
 
   /**
+   * Append a local/system message to the specified channel with a stable non-empty id.
+   * Used by App.svelte when it needs to surface a local note (e.g. offline warning)
+   * without bypassing the store.
+   *
+   * @param {string} id — channel id
+   * @param {{from:string, text:string}} msg
+   */
+  function appendLocal(id, { from, text }) {
+    const ch = _channels.get(id);
+    if (!ch) return;
+    ch.messages = [...ch.messages, { id: uid(), from, text }];
+  }
+
+  /**
    * Reconnect a channel: close the old socket, open a new one via wsFactory,
    * and wire the new socket's onmessage to the shared ingest fn.
    * The caller (App.svelte) is responsible for re-wiring onopen/onclose/onerror
@@ -198,6 +212,10 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
   function reconnect(id) {
     const ch = _channels.get(id);
     if (!ch) return;
+    // H3: null the old socket's onclose (and onerror) BEFORE closing it,
+    // so the close() call does NOT re-enter reconnect via the App.svelte onclose handler.
+    ch.socket.onclose = null;
+    ch.socket.onerror = null;
     // B1: close the OLD socket before replacing it.
     ch.socket.close();
     // Open a fresh socket via the injected factory.
@@ -217,6 +235,7 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
     receive,
     ingest,
     reconnect,
+    appendLocal,
     /** @returns {string|null} */
     get activeId() { return _activeId; },
   };

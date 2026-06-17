@@ -160,7 +160,6 @@
     };
 
     // onmessage is already wired by store.reconnect; add the avatar side-effect overlay.
-    const baseOnmessage = newWs.onmessage;
     newWs.onmessage = (event) => {
       let obj = null;
       try { obj = JSON.parse(event.data); } catch { /* ingest handles malformed */ }
@@ -267,7 +266,7 @@
     if (!text || !activeChannelId) return;
     const ch = store.channel(activeChannelId);
     if (!ch || !ch.socket || ch.socket.readyState !== WebSocket.OPEN) {
-      ch.messages = [...ch.messages, { from: 'system', text: '⚠ 尚未連線,訊息未送出,正在重連…' }];
+      store.appendLocal(activeChannelId, { from: 'system', text: '⚠ 尚未連線,訊息未送出,正在重連…' });
       channelList = store.channels();
       return;
     }
