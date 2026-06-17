@@ -8,11 +8,12 @@
 
 ## cf Baton Mode Positioning
 
-This document is a `docs/handoff-*.md` handoff doc. The `/context-flow:cf` baton mode recognizes
-`docs/handoff-*.md` files as self-contained planning handoffs: in its plan phase, cf reads this
-file and extracts the Behavioral Contracts directly. **cf does not need, and must not hand-write, a
-separate `contracts.json` sidecar** — the contracts live here, in this handoff doc, as the
-authoritative source of truth.
+This document is a `docs/handoff-*.md` handoff doc. The `/context-flow:cf` baton mode (see
+`commands/cf.md:28-43`) recognizes `docs/handoff-*.md` files as self-contained planning handoffs:
+in its plan phase, cf reads this file and **derives** a `contracts.json` sidecar from the
+Behavioral Contracts here. The upstream spiral turn does not need to hand-write that sidecar —
+cf derives it from this authoritative source. The contracts live here, in this handoff doc, as
+the single source of truth; the sidecar is a derived artifact, not hand-written by the upstream.
 
 ---
 
@@ -100,16 +101,20 @@ Decisions) enforces this.
 - **Alternatives considered**: Debounced render; memoizing last rendered prefix — deferred.
 - **Rationale**: Matches the "minimum viable" operating model.
 
-### D3: splitRevealedForRender is a new exported pure function in avatar.js (one-way door — UNRESOLVED, see Unresolved section)
+### D3: splitRevealedForRender is a new exported pure function in avatar.js
 
-- **Impact**: High (one-way door)
-- **Choice**: Tentatively export `splitRevealedForRender` from `avatar.js` as a named export.
+- **Impact**: Medium
+- **Choice**: Export `splitRevealedForRender` from `avatar.js` as a named export.
 - **Trade-off**: Exporting enables direct `bun test` coverage. Once exported and consumed by
-  App.svelte, the function signature becomes a two-party contract.
+  App.svelte, the function signature becomes a two-party contract. However, this decision is
+  reversible in a later refactor: the function can be made private again if the API changes, or
+  inlined into App.svelte, without data-migration cost.
 - **Alternatives considered**: Keep module-private — harder to write deterministic unit tests;
   rejected for this iteration.
 - **Rationale**: Consistent with existing avatar.js pattern (all pure functions are exported and
-  unit-tested directly).
+  unit-tested directly). Because the planning phase can reverse this export decision at low cost
+  (no persisted schema, no outward network contract), this is a two-way door treated as a
+  sane default. A later refactor can revisit it without structural disruption.
 
 ### D4: E-SHARED-TOKENIZER — splitRevealedForRender reuses renderRich tokenization semantics
 
@@ -182,15 +187,25 @@ boundary is always on a grapheme boundary, so grapheme safety is preserved autom
 **Fence state takes priority**: when inside an open code fence, rules 2 and 3 are suspended — `$`
 characters inside the fence do not trigger inline or display math detection.
 
-Algorithm (linear scan, O(n)):
-1. Walk `revealedPrefix` left-to-right tracking open/close state for each construct above using
-   char-index positions (not raw-octet positions).
+Algorithm (operational, tied to renderRich):
+The split point is determined by running `renderRich` (or the same shared tokenizer / dry-run)
+on successively longer prefixes and finding the last char-index at which the render result is
+still **stable** — i.e., the rendered output does not change when the next character is appended.
+An unclosed delimiter (`` ` ``, `$`) marks a boundary where the rendered result is unstable
+(adding more text could close the construct and radically change the HTML). Therefore:
+
+1. Walk `revealedPrefix` left-to-right with the shared tokenizer, tracking open/close state for
+   each construct using char-index positions (not raw-octet positions).
 2. Record the char-index where each unclosed construct opened.
-3. After the full scan, if any construct is still open, the split point is the minimum open-start
-   char-index across all open constructs.
+3. After the full scan, if any construct is still open, the split point is the earliest
+   char-index that would produce an unstable `renderRich(prefix)` result — the start of
+   the first unclosed construct.
 4. `prefix = revealedPrefix.slice(0, splitPoint)`, `suffix = revealedPrefix.slice(splitPoint)`.
 5. If no construct is open, `prefix = revealedPrefix`, `suffix = ''`.
 6. Call `renderRich(prefix)` → `richHtml`; return `{ richHtml, plainTail: suffix }`.
+
+The invariant: `richHtml === renderRich(prefix)` — the HTML returned is identical to calling
+`renderRich` directly on the safe prefix.
 
 #### States (user-facing)
 
@@ -222,16 +237,18 @@ Algorithm (linear scan, O(n)):
 - input `"$x$ is inline and **bold**"` (all closed) → `richHtml` contains katex markup and
   `<strong>bold</strong>`, `plainTail = ''`.
 
-##### E-DEFECT1 test case: two isolated `$` do not form a pair
+##### E-DEFECT1 test case: greedy inline `$` produces katex for price-like text
 
-- input literal `"I paid $5 and $10"` — the two `$` characters are independent price markers, not
-  math delimiters. The inline `$` regex `/\$([^$\n]+?)\$/g` would match `$5 and $10` as a pair
-  (`5 and $1` as content) — this is the defect.
-- Expected (correct): `richHtml` does NOT contain katex (i.e. does NOT contain `class="katex`);
-  the entire string should appear as plain text because there is no unambiguous inline math pair.
-- Resolution: the shared tokenizer must mirror `renderRich` exactly; `renderRich` would render
-  `$5 and $10` as katex (a known defect in the current pipeline that the shared tokenizer must
-  replicate faithfully — the split function must not diverge from `renderRich`'s tokenization).
+- input literal `"I paid $5 and $10"` — the inline `$` regex `/\$([^$\n]+?)\$/g` greedily
+  matches `$5 and $` as a pair (content: `5 and $1`), so `renderRich` produces katex for this
+  input. This is a known greedy false-positive in the current pipeline.
+- Expected (faithful to renderRich): `richHtml` **contains** `class="katex` — because
+  `splitRevealedForRender` must faithfully replicate `renderRich` output; the trailing `10`
+  is emitted as plain text after the katex span. `plainTail` is empty (the entire string is a
+  closed construct from renderRich's perspective).
+- Purpose: `splitRevealedForRender` must not diverge from `renderRich`; it must replicate
+  `renderRich` exactly, including greedy false-positives. A split function that suppresses the
+  katex output for this input would silently diverge from `renderRich`'s tokenization.
 
 ##### E-DEFECT2 test case: closed code fence containing `$` renders as `<pre>`, not math
 
@@ -250,14 +267,18 @@ Algorithm (linear scan, O(n)):
 - This test case validates the **display `$$` priority over inline `$`** rule: the `$$` is matched
   first (leaving `" and "` as safe closed text), and the unclosed `$b` falls into `plainTail`.
 
-##### E-DEFECT4 test case: CJK input, no replacement characters
+##### E-DEFECT4 test case: ZWJ emoji adjacent to `$` — grapheme boundary integrity
 
-- input literal `"價格 $5 未閉合"` — CJK characters followed by an unclosed `$5`.
-- Expected: `plainTail` does not contain U+FFFD (replacement character `�`) — i.e. the CJK
-  graphemes are not corrupted by the split. The `$5 未閉合` portion is in `plainTail` (unclosed
-  `$`); the leading `"價格 "` is in `richHtml` (rendered as plain paragraph text).
-- This validates the char-index / grapheme granularity invariant: no replacement character
-  appears because the split boundary is on an ASCII char-index, which is always grapheme-safe.
+- input literal `"👨‍💻$x"` — a man-technologist ZWJ sequence (`👨‍💻`, U+1F468 U+200D U+1F4BB)
+  directly adjacent to an unclosed `$x`. The ZWJ sequence is a multi-codepoint grapheme cluster;
+  the `$` is an ASCII delimiter.
+- Expected: the split point falls on the ASCII `$` character, not inside the ZWJ sequence;
+  `plainTail` does not contain U+FFFD (replacement character `�`) — i.e. the ZWJ sequence
+  is not corrupted by the split. The ZWJ emoji appears intact in `richHtml` (rendered as the
+  leading paragraph text); `plainTail` contains `"$x"` (unclosed inline `$`).
+- This validates the char-index / grapheme granularity invariant: the split boundary is always
+  on an ASCII character, which is by definition a grapheme boundary, so no replacement character
+  (U+FFFD) can appear in `plainTail` and no ZWJ sequence is split mid-cluster.
 
 ---
 
@@ -529,9 +550,10 @@ This is the correct trade-off: safety and correctness over eagerness.
 - **target**: `frontend/src/avatar.js`
 - **approach**: Add a new exported pure function `splitRevealedForRender(revealedPrefix)` after
   the `shouldRenderRich` function (currently ending at line 333). The function:
-  1. Scans `revealedPrefix` for unclosed code fences (counting ` ``` ` delimiters), unclosed `$$`,
-     and unclosed inline `$` — using the shared tokenizer (see D4 / E-SHARED-TOKENIZER). Scanning
-     uses char-index positions (string `.slice()`, regex match indices) — char-index only.
+  1. Scans `revealedPrefix` for unclosed code fences, unclosed `$$`, and unclosed inline `$`
+     using the same tokenization semantics as `renderRich` (see D4 / E-SHARED-TOKENIZER) — a
+     shared tokenizer or dry-run through the same pipeline. Scanning uses char-index positions
+     (string `.slice()`, regex match indices) — char-index only.
   2. Fence state takes priority: math delimiters inside a balanced fence are ignored.
   3. Scan priority: display `$$` before inline `$` (matching `renderRich` pipeline order).
   4. Finds the minimum start char-index of any unclosed construct.
