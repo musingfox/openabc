@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "openabc"
 path = "src/main.rs"
 
+[[bin]]
+name = "oab_stub"
+path = "src/bin/oab_stub.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
