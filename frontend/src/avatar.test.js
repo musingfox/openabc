@@ -411,6 +411,40 @@ if (isBun) {
     });
   });
 
+  describe('unclosed region safety', () => {
+    it('T1: unclosed code fence remains raw and unrendered', () => {
+      const out = splitRevealedForRender('```js\nconst x = 1');
+      expect(/<pre class/.test(out.plainTail)).toBe(false);
+      expect(/class="katex/.test(out.plainTail)).toBe(false);
+      expect(/mermaid-pending/.test(out.plainTail)).toBe(false);
+    });
+    it('T2: isolated dollar remains raw and never becomes KaTeX', () => {
+      const out = splitRevealedForRender('price is $5 per unit');
+      expect(/class="katex/.test(out.plainTail)).toBe(false);
+    });
+    it('T3: half mermaid fence remains raw and unrendered', () => {
+      const out = splitRevealedForRender('```mermaid\ngraph LR;X');
+      expect(/mermaid-pending/.test(out.plainTail)).toBe(false);
+      expect(/<pre class/.test(out.plainTail)).toBe(false);
+    });
+    it('T4: unclosed display math remains raw and never becomes KaTeX', () => {
+      const out = splitRevealedForRender('formula $$\int_0^1');
+      expect(/class="katex/.test(out.plainTail)).toBe(false);
+    });
+    it('T5: closed plain code fence with dollar renders as code, not KaTeX', () => {
+      const out = splitRevealedForRender('```\ncost is $5\n```');
+      expect(/<pre/.test(out.richHtml)).toBe(true);
+      expect(out.richHtml).not.toContain('class="katex');
+      expect(out.plainTail).toBe('');
+    });
+    it('T6: ZWJ emoji before unclosed math stays intact with a raw dollar tail', () => {
+      const out = splitRevealedForRender('👨‍💻$x');
+      expect(out.plainTail).toBe('$x');
+      expect(out.plainTail).not.toContain('�');
+      expect(out.richHtml).toContain('👨‍💻');
+    });
+  });
+
   describe('splitRevealedForRender', () => {
     it('T1: closed bold renders rich and has no plain tail', () => {
       const out = splitRevealedForRender('Hello **world**');
@@ -835,6 +869,40 @@ if (isBun) {
       const out = splitRevealedForRender('prefix text\n```mermaid\ngraph TD;A-->B\n```\nsuffix still streaming');
       assert.default.ok(MERMAID_MARKER.test(out.richHtml));
       assert.default.ok(out.plainTail.includes('suffix still streaming'));
+    });
+  });
+
+  describe('unclosed region safety', () => {
+    it('T1: unclosed code fence remains raw and unrendered', () => {
+      const out = splitRevealedForRender('```js\nconst x = 1');
+      assert.default.ok(!/<pre class/.test(out.plainTail));
+      assert.default.ok(!/class="katex/.test(out.plainTail));
+      assert.default.ok(!/mermaid-pending/.test(out.plainTail));
+    });
+    it('T2: isolated dollar remains raw and never becomes KaTeX', () => {
+      const out = splitRevealedForRender('price is $5 per unit');
+      assert.default.ok(!/class="katex/.test(out.plainTail));
+    });
+    it('T3: half mermaid fence remains raw and unrendered', () => {
+      const out = splitRevealedForRender('```mermaid\ngraph LR;X');
+      assert.default.ok(!/mermaid-pending/.test(out.plainTail));
+      assert.default.ok(!/<pre class/.test(out.plainTail));
+    });
+    it('T4: unclosed display math remains raw and never becomes KaTeX', () => {
+      const out = splitRevealedForRender('formula $$\int_0^1');
+      assert.default.ok(!/class="katex/.test(out.plainTail));
+    });
+    it('T5: closed plain code fence with dollar renders as code, not KaTeX', () => {
+      const out = splitRevealedForRender('```\ncost is $5\n```');
+      assert.default.ok(/<pre/.test(out.richHtml));
+      assert.default.ok(!out.richHtml.includes('class="katex'));
+      assert.default.strictEqual(out.plainTail, '');
+    });
+    it('T6: ZWJ emoji before unclosed math stays intact with a raw dollar tail', () => {
+      const out = splitRevealedForRender('👨‍💻$x');
+      assert.default.strictEqual(out.plainTail, '$x');
+      assert.default.ok(!out.plainTail.includes('�'));
+      assert.default.ok(out.richHtml.includes('👨‍💻'));
     });
   });
 
