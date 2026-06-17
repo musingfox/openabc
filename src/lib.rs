@@ -166,34 +166,6 @@ async fn w2_senders_keyed_by_conn_only() {
     assert!(texts.contains("from-bot-b"), "w2: second bot's text must be received");
 }
 
-/// w3 — mpsc FIFO ordering and capacity (64).
-/// (a) 64 messages sent in order arrive in the same order.
-/// (b) After the channel is full, try_send returns TrySendError::Full.
-#[cfg(test)]
-#[tokio::test]
-async fn w3_mpsc_ordering_and_capacity() {
-    use tokio::sync::mpsc;
-
-    let (tx, mut rx) = mpsc::channel::<String>(64);
-
-    for i in 0..64u32 {
-        tx.send(format!("msg-{i}")).await.expect("w3: send must succeed while not full");
-    }
-
-    for i in 0..64u32 {
-        let got = rx.recv().await.expect("w3: recv must return a value");
-        assert_eq!(got, format!("msg-{i}"), "w3(a): FIFO ordering violated at index {i}");
-    }
-
-    for i in 0..64u32 {
-        tx.try_send(format!("fill-{i}")).expect("w3(b): pre-fill must succeed");
-    }
-    match tx.try_send("overflow".to_string()) {
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {},
-        other => panic!("w3(b): expected TrySendError::Full, got {other:?}"),
-    }
-}
-
 /// w4 — AppState has no bot registry; dispatch_reply takes only two args.
 /// Structural assertion: constructing AppState exhausts its fields (ws_token +
 /// event_tx + native_senders). A closure that calls dispatch_reply with only

@@ -44,12 +44,12 @@
     {
       "id": "gap-mpsc-ordering-backpressure",
       "category": "ordering-back-pressure",
-      "wall": "w3_mpsc_ordering_and_capacity",
-      "summary": "Each browser connection has a dedicated mpsc channel of capacity 64. FIFO ordering is guaranteed within a single connection, but when the channel is full try_send returns TrySendError::Full and the reply is dropped silently. There is no back-pressure signal back to the OAB sender.",
+      "wall": null,
+      "summary": "Each browser connection has a dedicated mpsc channel. As seen in src/native.rs:231, the send path uses tx.send(json).await — an async await that applies back-pressure when the channel is full, ensuring messages are never lost without the caller knowing.",
       "proposed_field": "configurable capacity via OPENABC_PUSH_CHANNEL_CAPACITY env var + drop counter metric",
       "door": "two-way",
-      "witness_test": "w3_mpsc_ordering_and_capacity",
-      "notes": "The capacity (64) is a tunable internal constant; changing it or making it configurable is fully reversible. Adding a drop counter is also additive. Neither touches schema.rs or the outward protocol — a two-way door."
+      "witness_test": null,
+      "notes": "Current-state behavioral witness: the send path uses tx.send(json).await (src/native.rs:231), which applies back-pressure on a full channel rather than discarding. The capacity (64) is a tunable internal constant; changing it or making it configurable is fully reversible. Neither touches schema.rs or the outward protocol — a two-way door. non-tautological replacement 待後續輪。"
     },
     {
       "id": "gap-no-bot-registry",
