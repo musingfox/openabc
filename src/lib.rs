@@ -111,10 +111,10 @@ async fn health() -> &'static str {
     "ok"
 }
 
-// ─── w2 / w3 / w4 — multibot current-state wall unit witnesses ───────────────
+// ─── w2 / w4 — multibot current-state wall unit witnesses ───────────────────
 //
 // Placed at the crate root (not inside a named mod) so the lib test binary
-// registers them under the bare names w2_..., w3_..., w4_... — matching the
+// registers them under the bare names w2_..., w4_... — matching the
 // exact-name filter the gate uses (cargo test --lib <name> -- --exact).
 
 /// w2 — senders map keyed by conn_id only.
