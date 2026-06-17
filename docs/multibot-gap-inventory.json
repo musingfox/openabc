@@ -1,0 +1,29 @@
+{
+  "description": "Multi-bot protocol gap inventory for openabc. Reflects current-state witnesses from G2/G3/G4. Each entry names the wall (which Example exposes it), the proposed field to close it, and the door classification.",
+  "entries": [
+    {
+      "id": "gap-reply-no-bot-id",
+      "wall": "G2",
+      "summary": "GatewayReply carries no bot identity field; the OAB core does not include bot_id/agent_id/sender in the reply schema. The browser cannot tell which bot produced a reply.",
+      "proposed_field": "bot_id (string, top-level on GatewayReply)",
+      "door": "one-way",
+      "notes": "Adding bot_id to GatewayReply is an outward schema contract change that requires synchronized updates on both openabc (schema.rs ReplyChannel or GatewayReply) and openab core — a one-way door once any consumer reads this field."
+    },
+    {
+      "id": "gap-multibot-reply-unattributable",
+      "wall": "G3",
+      "summary": "When multiple bots (two OAB /ws connections) each dispatch a reply to the same conn_id, the browser push carries only {type, op, text} — there is no source field to distinguish which bot sent which message.",
+      "proposed_field": "source_bot_id (string, injected by dispatch_reply before browser push)",
+      "door": "one-way",
+      "notes": "Injecting source attribution into the browser push JSON is a two-way door internally (a config/tunable on the push serializer), but acquiring the originating bot identity from GatewayReply requires the upstream schema change (gap-reply-no-bot-id) — making end-to-end attribution a one-way door."
+    },
+    {
+      "id": "gap-no-bot-to-bot-channel",
+      "wall": "G4",
+      "summary": "The native adapter marks all inbound messages as is_bot:false and routes them only to openab core via event_tx (one broadcast call site). There is no dedicated bot↔bot channel — a bot cannot address another bot directly through the native gateway.",
+      "proposed_field": "bot_channel_id (string, optional on GatewayEvent.channel) + is_bot:true sender flag",
+      "door": "two-way",
+      "notes": "The is_bot flag on SenderInfo already exists in schema.rs; toggling it true for bot-originated messages is a two-way door (reversible config). Adding a dedicated bot↔bot routing path in the native adapter is also a two-way door — it extends the router without breaking existing browser flows."
+    }
+  ]
+}

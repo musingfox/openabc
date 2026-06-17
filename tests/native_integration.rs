@@ -330,6 +330,199 @@ async fn e4_all_assets_referenced_by_native_html_are_served_200() {
     }
 }
 
+/// G1 — inbound multi-bot fanout: two OAB /ws connections both receive the same
+/// GatewayEvent when a browser sends one message. This witnesses that `event_tx`
+/// is a broadcast channel and any number of /ws subscribers receive the event.
+#[tokio::test]
+async fn g1_inbound_multibot_fanout_both_oab_receive_event() {
+    let port = spawn_full_app().await;
+
+    // Connect two OAB /ws subscribers BEFORE the browser sends.
+    let oab_url = format!("ws://127.0.0.1:{port}/ws");
+    let (mut oab_ws_a, _) = connect_async(&oab_url).await.expect("OAB /ws A connect failed");
+    let (mut oab_ws_b, _) = connect_async(&oab_url).await.expect("OAB /ws B connect failed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Browser connects and sends one message.
+    let browser_url = format!("ws://127.0.0.1:{port}/native/ws");
+    let (mut browser_ws, _) = connect_async(&browser_url).await.expect("browser /native/ws connect failed");
+    browser_ws
+        .send(TMsg::Text(r#"{"text":"fanout-probe"}"#.to_string().into()))
+        .await
+        .unwrap();
+
+    // Helper: drain until we get a Text frame and return it.
+    async fn recv_text(ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>) -> String {
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(3), ws.next())
+                .await
+                .expect("timeout waiting for OAB event")
+                .expect("OAB ws stream ended")
+                .expect("OAB ws error");
+            if let TMsg::Text(t) = msg {
+                return t.to_string();
+            }
+        }
+    }
+
+    let raw_a = recv_text(&mut oab_ws_a).await;
+    let raw_b = recv_text(&mut oab_ws_b).await;
+
+    // Both must be valid GatewayEvent JSON.
+    for (label, raw) in [("OAB-A", &raw_a), ("OAB-B", &raw_b)] {
+        let v: serde_json::Value = serde_json::from_str(raw)
+            .unwrap_or_else(|_| panic!("{label}: event must be JSON, got: {raw}"));
+        assert_eq!(
+            v["schema"], "openab.gateway.event.v1",
+            "{label}: schema must be openab.gateway.event.v1"
+        );
+        assert_eq!(v["platform"], "native", "{label}: platform must be native");
+        assert!(
+            v["channel"]["id"].is_string(),
+            "{label}: channel.id must be a string"
+        );
+    }
+
+    // The conn_id embedded in the two events must be the same (same browser message).
+    let id_a = serde_json::from_str::<serde_json::Value>(&raw_a).unwrap()["channel"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let id_b = serde_json::from_str::<serde_json::Value>(&raw_b).unwrap()["channel"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(id_a, id_b, "Both OAB /ws must receive the same conn_id");
+
+    browser_ws.close(None).await.ok();
+    oab_ws_a.close(None).await.ok();
+    oab_ws_b.close(None).await.ok();
+}
+
+/// G2 — reply has no bot-identity field: serde round-trip of GatewayReply must
+/// not produce any key named bot_id, agent_id, sender, or source at the top level
+/// or inside the channel sub-object. This witnesses the current protocol gap.
+#[tokio::test]
+async fn g2_reply_has_no_bot_identity_field() {
+    use openabc::schema::{Content, GatewayReply, ReplyChannel};
+    let reply = GatewayReply {
+        schema: "openab.gateway.reply.v1".into(),
+        reply_to: "evt_test".into(),
+        platform: "native".into(),
+        channel: ReplyChannel {
+            id: "conn-test".into(),
+            thread_id: None,
+        },
+        content: Content {
+            content_type: "text".into(),
+            text: "hello".into(),
+            attachments: vec![],
+        },
+        command: None,
+        request_id: None,
+        quote_message_id: None,
+    };
+
+    let v = serde_json::to_value(&reply).expect("GatewayReply must serialize");
+
+    // Forbidden keys at top level.
+    let forbidden = ["bot_id", "agent_id", "sender", "source"];
+    let top_keys: Vec<&str> = v.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+    for key in &forbidden {
+        assert!(
+            !top_keys.contains(key),
+            "GatewayReply top-level must not contain '{}' (protocol gap G2)",
+            key
+        );
+    }
+
+    // Forbidden keys inside channel sub-object.
+    if let Some(ch) = v.get("channel").and_then(|c| c.as_object()) {
+        let ch_keys: Vec<&str> = ch.keys().map(|k| k.as_str()).collect();
+        for key in &forbidden {
+            assert!(
+                !ch_keys.contains(key),
+                "GatewayReply.channel must not contain '{}' (protocol gap G2)",
+                key
+            );
+        }
+    }
+}
+
+/// G3 — multi-bot reply merge unattributable: one browser, two OAB /ws (simulating
+/// bot A and bot B) each dispatch a reply to the same conn_id; the browser receives
+/// two pushes, each with keys ⊆ {type, op, text} — no source field to tell A from B.
+#[tokio::test]
+async fn g3_multibot_replies_merge_unattributable() {
+    let port = spawn_full_app().await;
+    let (mut browser_ws, mut oab_ws_a, conn_id) = connect_browser_and_get_conn_id(port).await;
+
+    // Second OAB /ws (bot B).
+    let oab_url = format!("ws://127.0.0.1:{port}/ws");
+    let (mut oab_ws_b, _) = connect_async(&oab_url).await.expect("OAB /ws B connect failed");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Bot A sends a reply.
+    let reply_a = serde_json::json!({
+        "schema": "openab.gateway.reply.v1",
+        "reply_to": "evt_a",
+        "platform": "native",
+        "channel": { "id": conn_id, "thread_id": null },
+        "content": { "type": "text", "text": "from-bot-a", "attachments": [] },
+        "command": null,
+        "request_id": null,
+        "quote_message_id": null
+    });
+    oab_ws_a.send(TMsg::Text(reply_a.to_string().into())).await.unwrap();
+
+    // Bot B sends a reply.
+    let reply_b = serde_json::json!({
+        "schema": "openab.gateway.reply.v1",
+        "reply_to": "evt_b",
+        "platform": "native",
+        "channel": { "id": conn_id, "thread_id": null },
+        "content": { "type": "text", "text": "from-bot-b", "attachments": [] },
+        "command": null,
+        "request_id": null,
+        "quote_message_id": null
+    });
+    oab_ws_b.send(TMsg::Text(reply_b.to_string().into())).await.unwrap();
+
+    // Collect 2 pushes from the browser side.
+    let mut pushes: Vec<serde_json::Value> = Vec::new();
+    while pushes.len() < 2 {
+        let msg = tokio::time::timeout(Duration::from_secs(3), browser_ws.next())
+            .await
+            .expect("timeout waiting for push to browser")
+            .expect("browser ws stream ended")
+            .expect("browser ws error");
+        if let TMsg::Text(t) = msg {
+            let v: serde_json::Value = serde_json::from_str(&t).expect("push must be JSON");
+            pushes.push(v);
+        }
+    }
+
+    // Every push must have keys ⊆ {type, op, text} — no source attribution.
+    let allowed: std::collections::HashSet<&str> = ["type", "op", "text"].iter().copied().collect();
+    for (i, push) in pushes.iter().enumerate() {
+        let push_keys: std::collections::HashSet<&str> = push
+            .as_object()
+            .expect("push must be a JSON object")
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        let extra: Vec<&&str> = push_keys.difference(&allowed).collect();
+        assert!(
+            extra.is_empty(),
+            "push[{i}] has unexpected keys {extra:?} — keys must be ⊆ {{type,op,text}} (gap G3: no source attribution)"
+        );
+    }
+
+    browser_ws.close(None).await.ok();
+    oab_ws_a.close(None).await.ok();
+    oab_ws_b.close(None).await.ok();
+}
+
 /// E-LAG — a broadcast `Lagged` must NOT tear down the OAB `/ws` connection.
 /// Flood well past the 256-slot broadcast buffer WITHOUT draining the OAB side, so the
 /// send_task's next `recv()` observes `RecvError::Lagged`. A final sentinel event must
