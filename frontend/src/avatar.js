@@ -389,12 +389,17 @@ export function splitRevealedForRender(revealedText) {
     return { richHtml: '', plainTail: '' };
   }
 
-  const richEnd = findRenderablePrefixEnd(revealedText);
-  const richText = revealedText.slice(0, richEnd);
-  return {
-    richHtml: richText ? renderRich(richText) : '',
-    plainTail: revealedText.slice(richEnd),
-  };
+  try {
+    const richEnd = findRenderablePrefixEnd(revealedText);
+    const richText = revealedText.slice(0, richEnd);
+    return {
+      richHtml: richText ? renderRich(richText) : '',
+      plainTail: revealedText.slice(richEnd),
+    };
+  } catch {
+    // Fail-safe: never break the bubble — fall back to raw streaming text.
+    return { richHtml: '', plainTail: revealedText };
+  }
 }
 
 /**
