@@ -218,7 +218,13 @@
   // Current active channel derived values.
   let activeChannel = $derived(activeChannelId ? store.channel(activeChannelId) : null);
   // Use store.activeMessages() so the display layer uses the same data path the tests probe.
-  let activeMessages = $derived(store.activeMessages());
+  // The store is plain JS (not $state), so this derived must read a reactive source to recompute:
+  // App reassigns `channelList` at every store mutation site (send/onmessage/appendLocal/openChannel),
+  // so depending on it (+ activeChannelId for switching) re-runs this when messages change.
+  let activeMessages = $derived.by(() => {
+    void channelList; void activeChannelId;
+    return store.activeMessages();
+  });
   let activeMeta = $derived(activeChannelId ? (channelMeta[activeChannelId] ?? {}) : {});
   let agentState = $derived(activeMeta.agentState ?? 'idle');
   let connStatus = $derived(activeMeta.connStatus ?? 'connecting');
