@@ -129,9 +129,10 @@ Decisions) enforces this.
   - **Scan precedence**: display `$$` has priority over inline `$` (avatar.js line 161 runs
     before line 169). A `$$` match consumes both `$` characters, preventing false inline matches.
   - **Inline `$` semantics**: the content between `$...$` must be non-empty and must not contain a
-    newline — matching the regex `/\$([^$\n]+?)\$/g` (avatar.js line 169). Two adjacent `$`
-    separated by unrelated text (e.g. `$5 and $10`) do **not** form a valid pair if the content
-    would span across what the greedy match would treat as separate tokens.
+    newline — matching the regex `/\$([^$\n]+?)\$/g` (avatar.js line 169). The match is greedy:
+    for `$5 and $10`, the first `$` is paired with the second `$` (content: `5 and `, which is
+    non-empty and contains no newline), leaving `10` as a non-delimiter suffix — the whole string
+    is closed from the tokenizer's perspective.
   - **Fence state priority over math**: content inside a code fence is **not scanned for math or
     mermaid**; the fence-open/fence-close state takes priority. A `$` or `$$` inside a balanced
     ` ``` ` fence does not trigger math tokenization.
@@ -187,25 +188,84 @@ boundary is always on a grapheme boundary, so grapheme safety is preserved autom
 **Fence state takes priority**: when inside an open code fence, rules 2 and 3 are suspended — `$`
 characters inside the fence do not trigger inline or display math detection.
 
-Algorithm (operational, tied to renderRich):
-The split point is determined by running `renderRich` (or the same shared tokenizer / dry-run)
-on successively longer prefixes and finding the last char-index at which the render result is
-still **stable** — i.e., the rendered output does not change when the next character is appended.
-An unclosed delimiter (`` ` ``, `$`) marks a boundary where the rendered result is unstable
-(adding more text could close the construct and radically change the HTML). Therefore:
+#### Linear tokenizer (single left-to-right scan)
 
-1. Walk `revealedPrefix` left-to-right with the shared tokenizer, tracking open/close state for
-   each construct using char-index positions (not raw-octet positions).
-2. Record the char-index where each unclosed construct opened.
-3. After the full scan, if any construct is still open, the split point is the earliest
-   char-index that would produce an unstable `renderRich(prefix)` result — the start of
-   the first unclosed construct.
-4. `prefix = revealedPrefix.slice(0, splitPoint)`, `suffix = revealedPrefix.slice(splitPoint)`.
-5. If no construct is open, `prefix = revealedPrefix`, `suffix = ''`.
-6. Call `renderRich(prefix)` → `richHtml`; return `{ richHtml, plainTail: suffix }`.
+The split point is found by a **single left-to-right scan** (O(n)) through `revealedPrefix`
+using a shared tokenizer that mirrors `renderRich`'s exact tokenization rules. There is no
+repeated re-parsing, no iterative prefix-lengthening, and no separate parallel rule set.
 
-The invariant: `richHtml === renderRich(prefix)` — the HTML returned is identical to calling
-`renderRich` directly on the safe prefix.
+##### Tokenizer pseudo-code
+
+// Inline $ rule: greedy left-to-right match; content must be non-empty and no newline
+// (mirrors /\$([^$\n]+?)\$/g — [^$\n] means non-empty, no-newline constraint)
+```
+function findSplitPoint(text):
+  i = 0
+  fenceOpen = false          // true while inside a balanced ``` fence
+  unclosedStart = null       // char-index of first still-open delimiter
+
+  while i < text.length:
+    // 1. Fence detection — highest priority; suspends math detection inside
+    if text[i..i+3] == "```":
+      if fenceOpen:
+        fenceOpen = false    // close fence; the fence construct is now balanced
+        if unclosedStart == fenceOpenIdx:
+          unclosedStart = null
+      else:
+        fenceOpen = true
+        fenceOpenIdx = i
+        if unclosedStart == null: unclosedStart = i
+      i += 3; continue
+
+    // 2. Inside fence: skip math detection entirely
+    if fenceOpen:
+      i += 1; continue
+
+    // 3. Display math $$ — matched before inline $ (same priority as renderRich line 161)
+    if text[i..i+2] == "$$":
+      j = text.indexOf("$$", i+2)
+      if j != -1:            // closed pair — both delimiters consumed, skip past
+        i = j + 2; continue
+      else:                  // unclosed $$
+        if unclosedStart == null: unclosedStart = i
+        i += 2; continue
+
+    // 4. Inline $ — non-empty, no newline content; matches renderRich line 169
+    //    Semantics: greedy match of /\$([^$\n]+?)\$/ — find next $ on same line
+    //    that is preceded by at least one non-$, non-newline character.
+    if text[i] == "$" and text[i+1] != "$":
+      j = findNextInlineDollar(text, i+1)   // next $ on same line, non-empty content
+      if j != -1:            // closed pair — greedy match consumed both; skip past
+        i = j + 1; continue
+      else:                  // unclosed $
+        if unclosedStart == null: unclosedStart = i
+        i += 1; continue
+
+    i += 1
+
+  return unclosedStart ?? text.length   // text.length means no unclosed construct
+```
+
+**Greedy inline `$` semantics** (step 4): `findNextInlineDollar(text, from)` finds the
+**next `$` at or after `from` that (a) does not follow immediately from another `$` and
+(b) is on the same line** — matching `[^$\n]+?` (non-empty, no newline). The match is
+greedy: the first eligible closing `$` is taken. Content that spans across intermediate `$`
+characters (like `$5 and $10`) is consumed as a single matched pair (`$5 and $` closes on
+the second `$`), leaving whatever follows as a non-delimiter suffix.
+
+**Mermaid fences** are a code fence variant (lang=mermaid); they are handled by the fence
+state machine in step 1 — the **same as any other code fence** (identical behavior to rule 1).
+The mermaid-pending node is emitted only after the closing ` ``` ` enters the prefix.
+
+Once the scan returns `splitPoint`:
+
+1. `prefix = revealedPrefix.slice(0, splitPoint)`, `suffix = revealedPrefix.slice(splitPoint)`.
+2. If no construct is open (`splitPoint === text.length`), `prefix = revealedPrefix`, `suffix = ''`.
+3. Call `renderRich(prefix)` → `richHtml`; return `{ richHtml, plainTail: suffix }`.
+
+**Correctness condition / invariant**: `richHtml === renderRich(prefix)` — the HTML returned
+is identical to calling `renderRich` directly on the safe prefix. This is an invariant, not an
+algorithm step: it is the property that makes `splitRevealedForRender` correct.
 
 #### States (user-facing)
 
@@ -236,6 +296,48 @@ The invariant: `richHtml === renderRich(prefix)` — the HTML returned is identi
   contains a `data-mermaid` attribute (mermaid-pending node), `plainTail = ''`.
 - input `"$x$ is inline and **bold**"` (all closed) → `richHtml` contains katex markup and
   `<strong>bold</strong>`, `plainTail = ''`.
+
+##### Greedy simulation test cases and parity comparison
+
+The following two cases illustrate how the greedy tokenizer processes `$` delimiters. A naive
+**parity** (odd/even `$`-count) approach would count raw `$` occurrences and declare the
+string open if the count is odd — but **parity does not account for the non-empty and
+no-newline constraints of inline `$`**. The real distinguishing cases are inputs where a `$`
+is immediately followed by a newline (e.g. `$x\n$y`) or where two adjacent `$` form an empty
+span (`$$` treated as display, not two separate inline delimiters) — in those situations parity
+gives the wrong answer while the greedy simulation gives the correct one.
+
+The two cases below (`a $x$ b $y` and `$5 and $10`) happen to agree between parity and greedy
+simulation in pure inline context, so they **cannot on their own distinguish** greedy from
+parity. They are included to demonstrate the greedy pairing order; the cross-line and
+empty-content cases are the true discriminators.
+
+**Case 1** — input literal `a $x$ b $y`:
+
+- Display pass: no `$$` → unchanged.
+- Inline pass (`/\$([^$\n]+?)\$/g`): greedy matches `$x$` as the first pair (content `x`,
+  non-empty, no newline). After consuming `$x$`, the remaining text is `a I b $y`.
+- `$y` has no closing `$` on the same line → unclosed. Split point falls at the start of `$y`.
+- `plainTail` contains `$y`; `richHtml = renderRich("a $x$ b ")` (katex for `x`).
+
+**Case 2** — input literal `$5 and $10`:
+
+- Display pass: no `$$` → unchanged.
+- Inline pass: greedy matches `$5 and $` as a pair (content `5 and `, non-empty, no newline,
+  no intermediate `$`). After consuming, `10` remains with no leading `$`.
+- No unclosed delimiter → split point = end. `plainTail` is empty; the entire string is
+  closed from the tokenizer's perspective. `richHtml` contains katex for `5 and ` (greedy
+  false-positive, faithfully replicated).
+
+**Why parity misleads** — the key reason to prefer greedy simulation over parity (just counting
+`$` odd/even): inline `$` requires **non-empty content** (`[^$\n]+?`, at least one char) and
+**no newline** (`[^\n]`). A parity check counts `$` without these constraints. For example,
+input `$x\n$y` has two `$` (parity says even → closed), but the greedy scan finds no valid
+closing `$` for the first one (newline in between) → first `$` is unclosed → split there.
+Similarly, `$$` at the start of a line triggers display math detection (two `$` = display
+delimiter), not two independent inline delimiters, so counting them as two for parity
+purposes gives the wrong pairing. The shared tokenizer's greedy simulation is the only
+approach that faithfully replicates `renderRich`'s actual behaviour.
 
 ##### E-DEFECT1 test case: greedy inline `$` produces katex for price-like text
 
@@ -552,8 +654,8 @@ This is the correct trade-off: safety and correctness over eagerness.
   the `shouldRenderRich` function (currently ending at line 333). The function:
   1. Scans `revealedPrefix` for unclosed code fences, unclosed `$$`, and unclosed inline `$`
      using the same tokenization semantics as `renderRich` (see D4 / E-SHARED-TOKENIZER) — a
-     shared tokenizer or dry-run through the same pipeline. Scanning uses char-index positions
-     (string `.slice()`, regex match indices) — char-index only.
+     shared tokenizer extracted from or aligned with the `renderRich` pipeline. Scanning uses
+     char-index positions (string `.slice()`, regex match indices) — char-index only.
   2. Fence state takes priority: math delimiters inside a balanced fence are ignored.
   3. Scan priority: display `$$` before inline `$` (matching `renderRich` pipeline order).
   4. Finds the minimum start char-index of any unclosed construct.
@@ -627,18 +729,17 @@ This is the correct trade-off: safety and correctness over eagerness.
 
 ## Unresolved
 
-### U1 — One-way door: should `splitRevealedForRender` be a permanent exported API?
+### U1 — Export decision for `splitRevealedForRender` — resolved by D3
 
-- **Why unresolved**: Exporting the function makes it a first-class contract of avatar.js,
-  committing future streaming-render features to its `{ richHtml, plainTail }` signature. Keeping
-  it unexported makes the split an implementation detail of App.svelte but removes direct
-  unit-test coverage.
-- **Suggested resolution**: Export it (consistent with all other avatar.js pure functions, enables
-  clean unit tests). If the signature changes in a future turn, it is a refactor, not a data
-  migration. However, because this shapes the test surface and the API every subsequent
-  streaming-render turn will build upon, a human should confirm before cf implements.
+**Status**: resolved by D3 (two-way door, sane default chosen).
+
+- **Resolution**: Export `splitRevealedForRender` as a named export from `avatar.js`. This is
+  consistent with all other avatar.js pure functions and enables direct `bun test` coverage.
+  As D3 notes, the export decision is reversible at low cost (no persisted schema, no outward
+  network contract) — a later refactor can make it private or inline it into App.svelte without
+  structural disruption. No further confirmation needed before cf implements.
 - **Alternatives**:
-  - Export (recommended): clean testability, visible contract, minimal extra coupling.
+  - Export (default, chosen by D3): clean testability, visible contract, minimal extra coupling.
   - Keep private: hides the function, forces App.svelte integration tests for split logic, harder
     to isolate bugs.
 
