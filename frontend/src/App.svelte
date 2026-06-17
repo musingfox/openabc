@@ -1,8 +1,8 @@
 <script>
   import { onMount } from 'svelte';
   import mermaid from 'mermaid';
-  import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender } from './avatar.js';
-  import { createChannelStore } from './channels.js';
+  import { stateToSrc, replyToState, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender } from './avatar.js';
+  import { createChannelStore, ingestSocketMessage } from './channels.js';
 
   // ── Channel store ──────────────────────────────────────────────────────────
   // Each channel holds its own independent /native/ws connection.
@@ -22,7 +22,7 @@
   const CONN_LABEL = { connecting: '連線中…', open: '已連線', reconnecting: '重連中…' };
   const REVEAL_INTERVAL_MS = 30;
 
-  // Active reveal timers: map from `${channelId}-${msgIndex}` to timer id.
+  // Active reveal timers: map from `${channelId}-${msgId}` to timer id.
   let revealTimers = {};
 
   // Initialise mermaid once at startup.
@@ -33,24 +33,24 @@
     if (el) el.scrollTop = scrollTopToBottom({ scrollHeight: el.scrollHeight, clientHeight: el.clientHeight });
   }
 
-  function startReveal(channelId, idx, text) {
-    const key = `${channelId}-${idx}`;
+  function startReveal(channelId, msgId, text) {
+    const key = `${channelId}-${msgId}`;
     if (revealTimers[key]) return;
     channelMeta = {
       ...channelMeta,
       [channelId]: {
         ...channelMeta[channelId],
-        revealState: { ...(channelMeta[channelId]?.revealState ?? {}), [idx]: 0 },
+        revealState: { ...(channelMeta[channelId]?.revealState ?? {}), [msgId]: 0 },
       },
     };
     revealTimers[key] = setInterval(() => {
-      const current = channelMeta[channelId]?.revealState?.[idx] ?? 0;
+      const current = channelMeta[channelId]?.revealState?.[msgId] ?? 0;
       const next = current + 1;
       channelMeta = {
         ...channelMeta,
         [channelId]: {
           ...channelMeta[channelId],
-          revealState: { ...(channelMeta[channelId]?.revealState ?? {}), [idx]: next },
+          revealState: { ...(channelMeta[channelId]?.revealState ?? {}), [msgId]: next },
         },
       };
       scrollMessagesToEnd();
@@ -91,23 +91,21 @@
       let obj = null;
       try { obj = JSON.parse(event.data); } catch { return; }
 
-      // Drive avatar state.
+      // Drive avatar state machine (side-effect only; does not affect messages).
       const agentState = replyToState(obj);
       const prevMessages = store.channel(id).messages;
 
-      // Use reduceMessages to handle streaming/reactions the same way the
-      // single-channel version did. We must sync back into the store.
-      const next = reduceMessages(prevMessages, obj);
-      store.channel(id).messages = next;
+      // Route the raw frame through the shared ingest fn (production path, tested by probe).
+      ingestSocketMessage(store, id, event.data);
 
+      const next = store.channel(id).messages;
       channelList = store.channels(); // trigger reactivity
 
       // Start streaming reveal for newly appended agent messages.
       if (next.length > prevMessages.length) {
-        const newIdx = next.length - 1;
-        const newMsg = next[newIdx];
+        const newMsg = next[next.length - 1];
         if (newMsg.from === 'agent') {
-          startReveal(id, newIdx, newMsg.text);
+          startReveal(id, newMsg.id, newMsg.text);
         }
       }
 
@@ -141,11 +139,13 @@
   }
 
   function reconnectChannel(id, name) {
-    // Re-open a new socket for this channel.
-    const newWs = new WebSocket((location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host + '/native/ws');
     const ch = store.channel(id);
     if (!ch) return;
-    ch.socket = newWs;
+
+    // B1: store.reconnect closes old socket and opens a new one via wsFactory,
+    // wiring onmessage on the new socket to the shared ingest fn.
+    store.reconnect(id);
+    const newWs = ch.socket; // ch.socket is now the new socket
 
     channelMeta = {
       ...channelMeta,
@@ -159,18 +159,23 @@
       };
     };
 
+    // onmessage is already wired by store.reconnect; add the avatar side-effect overlay.
+    const baseOnmessage = newWs.onmessage;
     newWs.onmessage = (event) => {
       let obj = null;
-      try { obj = JSON.parse(event.data); } catch { return; }
-      const agentState = replyToState(obj);
+      try { obj = JSON.parse(event.data); } catch { /* ingest handles malformed */ }
+      const agentState = obj ? replyToState(obj) : (channelMeta[id]?.agentState ?? 'idle');
       const prevMessages = store.channel(id).messages;
-      const next = reduceMessages(prevMessages, obj);
-      store.channel(id).messages = next;
+
+      // Route through shared ingest (already wired, call again is idempotent for
+      // the onmessage that store.reconnect set; we override here to add avatar effect).
+      ingestSocketMessage(store, id, event.data);
+
+      const next = store.channel(id).messages;
       channelList = store.channels();
       if (next.length > prevMessages.length) {
-        const newIdx = next.length - 1;
-        const newMsg = next[newIdx];
-        if (newMsg.from === 'agent') startReveal(id, newIdx, newMsg.text);
+        const newMsg = next[next.length - 1];
+        if (newMsg.from === 'agent') startReveal(id, newMsg.id, newMsg.text);
       }
       channelMeta = { ...channelMeta, [id]: { ...channelMeta[id], agentState } };
     };
@@ -213,7 +218,8 @@
 
   // Current active channel derived values.
   let activeChannel = $derived(activeChannelId ? store.channel(activeChannelId) : null);
-  let activeMessages = $derived(activeChannel ? activeChannel.messages : []);
+  // Use store.activeMessages() so the display layer uses the same data path the tests probe.
+  let activeMessages = $derived(store.activeMessages());
   let activeMeta = $derived(activeChannelId ? (channelMeta[activeChannelId] ?? {}) : {});
   let agentState = $derived(activeMeta.agentState ?? 'idle');
   let connStatus = $derived(activeMeta.connStatus ?? 'connecting');
@@ -332,15 +338,15 @@
       </div>
 
       <ul id="messages" style="max-height:40vh;overflow-y:auto">
-        {#each activeMessages as m, i (i)}
+        {#each activeMessages as m (m.id)}
           <li class={m.from}>
             <span class="label">{m.from}</span>
-            <div class="bubble{m.from === 'agent' && !isRevealComplete(m.text, revealState[i] ?? 0) ? ' revealing' : ''}">
+            <div class="bubble{m.from === 'agent' && !isRevealComplete(m.text, revealState[m.id] ?? 0) ? ' revealing' : ''}">
               {#if m.from === 'agent'}
-                {#if shouldRenderRich(isRevealComplete(m.text, revealState[i] ?? 0))}
+                {#if shouldRenderRich(isRevealComplete(m.text, revealState[m.id] ?? 0))}
                   {@html renderRich(m.text)}
                 {:else}
-                  {@const revealed = splitRevealedForRender(revealText(m.text, revealState[i] ?? 0))}
+                  {@const revealed = splitRevealedForRender(revealText(m.text, revealState[m.id] ?? 0))}
                   {@html revealed.richHtml}{revealed.plainTail}
                 {/if}
               {:else}

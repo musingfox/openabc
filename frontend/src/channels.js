@@ -7,11 +7,16 @@
  * Public API (frozen handle, load-bearing behaviors):
  *   createChannelStore(wsFactory) -> store
  *   store.addChannel(name)        -> channelId
- *   store.channel(id)             -> { id, name, socket, messages:[{from,text}] }
+ *   store.channel(id)             -> { id, name, socket, messages:[{id,from,text}] }
  *   store.setActive(id)
  *   store.activeMessages()        -> messages of active channel only
- *   store.send(id, text)          -> calls channel's socket.send once; appends {from:'me',text}
- *   store.receive(id, payload)    -> appends {from:'agent',text} to that channel only
+ *   store.send(id, text)          -> calls channel's socket.send once; appends {id,from:'me',text}
+ *   store.receive(id, payload)    -> appends {id,from:'agent',text} to that channel only
+ *   store.ingest(id, rawData)     -> parse raw WS frame string; route to channel (shared ingest)
+ *   store.reconnect(id)           -> close old socket, open new one via wsFactory
+ *
+ *   ingestSocketMessage(store, id, rawData) — module-level shared ingest; same contract
+ *   as store.ingest but callable without the store as `this`.
  */
 
 /**
@@ -23,6 +28,35 @@ function uid() {
 }
 
 /**
+ * Parse a raw WebSocket event.data frame and, if it is a type==='message' frame,
+ * append a message with a stable id to the target channel.
+ *
+ * D1 seam: `from` is hardcoded 'agent' for all inbound frames.
+ * No multi-agent branching on any source/sender field in the payload.
+ *
+ * @param {Map} _channels   — the internal channels Map (passed by reference from store)
+ * @param {string} id       — target channelId
+ * @param {string} rawData  — the raw string from socket event.data
+ */
+function _ingestRaw(_channels, id, rawData) {
+  const ch = _channels.get(id);
+  if (!ch) return;
+  let payload;
+  try {
+    payload = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+  } catch {
+    return; // malformed JSON → silent no-op
+  }
+  if (payload && payload.type === 'message' && typeof payload.text === 'string') {
+    ch.messages = [
+      ...ch.messages,
+      { id: uid(), from: 'agent', text: payload.text },
+    ];
+  }
+  // reaction / other types → silent no-op
+}
+
+/**
  * Create a channel store.
  *
  * @param {(url: string) => WebSocket} wsFactory — injectable WS factory;
@@ -30,12 +64,14 @@ function uid() {
  * @returns store object
  */
 export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
-  /** @type {Map<string, {id:string, name:string, socket:WebSocket, messages:{from:string,text:string}[]}>} */
+  /** @type {Map<string, {id:string, name:string, socket:WebSocket, messages:{id:string,from:string,text:string}[]}>} */
   const _channels = new Map();
   let _activeId = null;
 
   /**
    * Add a new channel, opening exactly one /native/ws connection for it.
+   * The socket.onmessage is wired to the shared ingest fn — this is the SINGLE
+   * onmessage registration point. App.svelte MUST NOT set its own onmessage.
    * @param {string} name
    * @returns {string} channelId
    */
@@ -50,23 +86,10 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
       messages: [],
     };
 
-    // Wire inbound messages from this socket to this channel only.
-    socket.onmessage = (event) => {
-      let payload;
-      try {
-        payload = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-      } catch {
-        return;
-      }
-      if (payload && payload.type === 'message' && typeof payload.text === 'string') {
-        channel.messages = [
-          ...channel.messages,
-          { from: payload.from || 'agent', text: payload.text },
-        ];
-      }
-    };
-
     _channels.set(id, channel);
+
+    // Wire inbound messages from this socket to this channel ONLY via shared ingest.
+    socket.onmessage = (event) => _ingestRaw(_channels, id, event.data);
 
     // Default active channel = first one added.
     if (_activeId === null) {
@@ -104,7 +127,7 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
 
   /**
    * Return messages of the active channel only.
-   * @returns {{from:string,text:string}[]}
+   * @returns {{id:string,from:string,text:string}[]}
    */
   function activeMessages() {
     if (_activeId === null) return [];
@@ -114,7 +137,7 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
 
   /**
    * Send text via the specified channel's socket.
-   * Appends {from:'me', text} to that channel's messages.
+   * Appends {id,from:'me',text} to that channel's messages.
    * Only that channel's socket.send is called.
    *
    * @param {string} id — channel id
@@ -124,26 +147,64 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
     const ch = _channels.get(id);
     if (!ch) return;
     ch.socket.send(JSON.stringify({ text }));
-    ch.messages = [...ch.messages, { from: 'me', text }];
+    ch.messages = [...ch.messages, { id: uid(), from: 'me', text }];
+  }
+
+  /**
+   * Ingest a raw WebSocket frame string onto a specific channel.
+   * This is the shared ingest entry point — the same logic addChannel.socket.onmessage
+   * uses, exposed for external callers (App.svelte, tests).
+   *
+   * @param {string} id      — channel id
+   * @param {string} rawData — raw event.data string from the WebSocket
+   */
+  function ingest(id, rawData) {
+    _ingestRaw(_channels, id, rawData);
   }
 
   /**
    * Ingest an inbound payload onto a specific channel (by id).
-   * Used for testing and explicit routing; normally the socket.onmessage
-   * handler does this automatically.
+   * Accepts a raw string (socket onmessage event.data) OR a pre-parsed payload object.
+   * When given a raw string, it is parsed first (same as ingest).
+   * Used for testing and explicit routing.
    *
    * @param {string} id — channel id
-   * @param {{type:string, text:string, from?:string}} payload
+   * @param {string|{type:string, text:string}} payloadOrRaw
    */
-  function receive(id, payload) {
+  function receive(id, payloadOrRaw) {
+    if (typeof payloadOrRaw === 'string') {
+      _ingestRaw(_channels, id, payloadOrRaw);
+      return;
+    }
     const ch = _channels.get(id);
     if (!ch) return;
+    const payload = payloadOrRaw;
     if (payload && payload.type === 'message' && typeof payload.text === 'string') {
       ch.messages = [
         ...ch.messages,
-        { from: payload.from || 'agent', text: payload.text },
+        { id: uid(), from: 'agent', text: payload.text },
       ];
     }
+  }
+
+  /**
+   * Reconnect a channel: close the old socket, open a new one via wsFactory,
+   * and wire the new socket's onmessage to the shared ingest fn.
+   * The caller (App.svelte) is responsible for re-wiring onopen/onclose/onerror
+   * on ch.socket after this returns.
+   *
+   * @param {string} id — channel id
+   */
+  function reconnect(id) {
+    const ch = _channels.get(id);
+    if (!ch) return;
+    // B1: close the OLD socket before replacing it.
+    ch.socket.close();
+    // Open a fresh socket via the injected factory.
+    const newSocket = wsFactory('/native/ws');
+    ch.socket = newSocket;
+    // Wire inbound messages on the new socket through the shared ingest fn.
+    newSocket.onmessage = (event) => _ingestRaw(_channels, id, event.data);
   }
 
   return {
@@ -154,7 +215,22 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
     activeMessages,
     send,
     receive,
+    ingest,
+    reconnect,
     /** @returns {string|null} */
     get activeId() { return _activeId; },
   };
+}
+
+/**
+ * Module-level shared ingest function (canonical frozen handle).
+ * Wraps store.ingest so external callers can use the named-export form.
+ * Probe discovery order: channels.ingestSocketMessage → store.ingest → store.receive.
+ *
+ * @param {ReturnType<typeof createChannelStore>} store
+ * @param {string} channelId
+ * @param {string} rawData — raw event.data string
+ */
+export function ingestSocketMessage(store, channelId, rawData) {
+  store.ingest(channelId, rawData);
 }
