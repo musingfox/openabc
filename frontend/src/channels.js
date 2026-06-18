@@ -6,8 +6,8 @@
  *
  * Public API (frozen handle, load-bearing behaviors):
  *   createChannelStore(wsFactory) -> store
- *   store.addChannel(name)        -> channelId
- *   store.channel(id)             -> { id, name, socket, messages:[{id,from,text}] }
+ *   store.addChannel(name, agentId?) -> channelId
+ *   store.channel(id)             -> { id, name, agentId, socket, messages:[{id,from,text}] }
  *   store.setActive(id)
  *   store.activeMessages()        -> messages of active channel only
  *   store.send(id, text)          -> calls channel's socket.send once; appends {id,from:'me',text}
@@ -73,15 +73,17 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
    * The socket.onmessage is wired to the shared ingest fn — this is the SINGLE
    * onmessage registration point. App.svelte MUST NOT set its own onmessage.
    * @param {string} name
+   * @param {string} [agentId] — optional agent label to bind this channel to
    * @returns {string} channelId
    */
-  function addChannel(name) {
+  function addChannel(name, agentId) {
     const id = uid();
     const socket = wsFactory('/native/ws');
 
     const channel = {
       id,
       name,
+      agentId: agentId !== undefined ? agentId : null,
       socket,
       messages: [],
     };
@@ -146,7 +148,8 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
   function send(id, text) {
     const ch = _channels.get(id);
     if (!ch) return;
-    ch.socket.send(JSON.stringify({ text }));
+    const frame = ch.agentId ? { text, agent: ch.agentId } : { text };
+    ch.socket.send(JSON.stringify(frame));
     ch.messages = [...ch.messages, { id: uid(), from: 'me', text }];
   }
 

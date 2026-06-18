@@ -46,10 +46,12 @@ static ASSET_THINKING_PNG: &[u8] = include_bytes!("../frontend/dist/assets/think
 /// Per-connection sender handle keyed by connection_id.
 pub type NativeSenders = Arc<Mutex<HashMap<String, mpsc::Sender<String>>>>;
 
-/// Inbound message from the browser (`{"text": "..."}`).
+/// Inbound message from the browser (`{"text": "..."}` or `{"text":"...","agent":"..."}`).
 #[derive(Debug, Deserialize)]
 pub struct BrowserMessage {
     pub text: String,
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 /// Outbound push to the browser.
@@ -184,7 +186,7 @@ async fn handle_browser(
             }
         };
 
-        let event = GatewayEvent::new(
+        let mut event = GatewayEvent::new(
             "native",
             ChannelInfo {
                 id: conn_id.clone(),
@@ -201,6 +203,7 @@ async fn handle_browser(
             &format!("native_{}", uuid::Uuid::new_v4()),
             vec![],
         );
+        event.target_agent = browser_msg.agent.clone();
 
         let json = serde_json::to_string(&event).unwrap_or_default();
         let _ = event_tx.send(json);

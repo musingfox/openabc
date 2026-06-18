@@ -14,6 +14,8 @@ pub struct GatewayEvent {
     pub content: Content,
     pub mentions: Vec<String>,
     pub message_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -101,6 +103,7 @@ impl GatewayEvent {
             },
             mentions,
             message_id: message_id.into(),
+            target_agent: None,
         }
     }
 }
