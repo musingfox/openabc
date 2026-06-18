@@ -3,7 +3,7 @@
 // gate passage is decided by the probe, not by this file.
 
 import { test, expect } from 'bun:test';
-import { createChannelStore, ingestSocketMessage } from './channels.js';
+import { createChannelStore, ingestSocketMessage, channelArgs } from './channels.js';
 
 function makeFakeWsFactory() {
   const created = [];
@@ -174,4 +174,52 @@ test('E-FE-NO-AGENT: addChannel(name) without agentId → send produces {text} o
   const frame = JSON.parse(sock.sent[0]);
   expect(frame).toEqual({ text: 'hi' });
   expect('agent' in frame).toBe(false);
+});
+
+// ── E1 — channelArgs pure fn ──────────────────────────────────────────────────
+
+test('E1: channelArgs(name,agentId) returns [name,agentId] when agentId is non-empty', () => {
+  expect(channelArgs('x', 'A')).toEqual(['x', 'A']);
+  expect(channelArgs('ch', 'bot-42')).toEqual(['ch', 'bot-42']);
+});
+
+test('E1: channelArgs returns [name] when agentId is empty string', () => {
+  expect(channelArgs('x', '')).toEqual(['x']);
+});
+
+test('E1: channelArgs returns [name] when agentId is blank/whitespace', () => {
+  expect(channelArgs('x', '   ')).toEqual(['x']);
+  expect(channelArgs('x', '\t')).toEqual(['x']);
+});
+
+test('E1: channelArgs returns [name] when agentId is undefined / not provided', () => {
+  expect(channelArgs('x', undefined)).toEqual(['x']);
+  expect(channelArgs('x')).toEqual(['x']);
+});
+
+// ── E2 — channelArgs -> addChannel(...args) -> send -> frame carries agent ────
+
+test('E2: channelArgs->addChannel(...args)->send produces {text,agent:id} on wire', () => {
+  const { factory, created } = makeFakeWsFactory();
+  const store = createChannelStore(factory);
+  const id = store.addChannel(...channelArgs('chan', 'agentA'));
+  store.send(id, 'hi');
+  const sock = created[0];
+  expect(sock.sent.length).toBe(1);
+  const frame = JSON.parse(sock.sent[0]);
+  expect(frame).toEqual({ text: 'hi', agent: 'agentA' });
+});
+
+// ── E3 — channelArgs(blank) -> addChannel(...args) -> frame omits agent key ───
+
+test('E3: channelArgs(blank/empty agent)->addChannel(...args)->send produces {text} only', () => {
+  const { factory, created } = makeFakeWsFactory();
+  const store = createChannelStore(factory);
+  const id = store.addChannel(...channelArgs('chan', ''));
+  store.send(id, 'hi');
+  const sock = created[0];
+  expect(sock.sent.length).toBe(1);
+  const frame = JSON.parse(sock.sent[0]);
+  expect('agent' in frame).toBe(false);
+  expect(frame.text).toBe('hi');
 });

@@ -245,6 +245,23 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
 }
 
 /**
+ * Build the args array for store.addChannel from a name and optional agentId.
+ * Returns [name, agentId] when agentId is non-empty and non-blank;
+ * returns [name] when agentId is empty, blank, or not provided.
+ * Designed to be spread: store.addChannel(...channelArgs(name, agentId)).
+ *
+ * @param {string} name
+ * @param {string} [agentId]
+ * @returns {[string] | [string, string]}
+ */
+export function channelArgs(name, agentId) {
+  if (agentId !== undefined && typeof agentId === 'string' && agentId.trim() !== '') {
+    return [name, agentId];
+  }
+  return [name];
+}
+
+/**
  * Module-level shared ingest function (canonical frozen handle).
  * Wraps store.ingest so external callers can use the named-export form.
  * Probe discovery order: channels.ingestSocketMessage → store.ingest → store.receive.

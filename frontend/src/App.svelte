@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import mermaid from 'mermaid';
   import { stateToSrc, replyToState, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender } from './avatar.js';
-  import { createChannelStore, ingestSocketMessage } from './channels.js';
+  import { createChannelStore, ingestSocketMessage, channelArgs } from './channels.js';
 
   // ── Channel store ──────────────────────────────────────────────────────────
   // Each channel holds its own independent /native/ws connection.
@@ -12,8 +12,9 @@
   let channelList = $state([]);
   let activeChannelId = $state(null);
 
-  // New channel name input.
+  // New channel name and agent id inputs.
   let newChannelName = $state('');
+  let newChannelAgent = $state('');
 
   // Per-channel state: agentState, connStatus, revealState, reconnect trackers.
   // Keyed by channelId.
@@ -61,8 +62,8 @@
     }, REVEAL_INTERVAL_MS);
   }
 
-  function openChannel(name) {
-    const id = store.addChannel(name);
+  function openChannel(name, agentId) {
+    const id = store.addChannel(...channelArgs(name, agentId));
     const ch = store.channel(id);
 
     // Per-channel meta defaults.
@@ -206,8 +207,9 @@
   function addChannel() {
     const name = newChannelName.trim();
     if (!name) return;
-    openChannel(name);
+    openChannel(name, newChannelAgent.trim());
     newChannelName = '';
+    newChannelAgent = '';
   }
 
   function switchChannel(id) {
@@ -328,6 +330,12 @@
           type="text"
           placeholder="新頻道名稱…"
           bind:value={newChannelName}
+          onkeydown={addChannelOnKey}
+        />
+        <input
+          type="text"
+          placeholder="Agent ID（選填）"
+          bind:value={newChannelAgent}
           onkeydown={addChannelOnKey}
         />
         <button onclick={addChannel}>+</button>
