@@ -11,14 +11,18 @@
 //!
 //! # Environment variables
 //!
-//! | Variable           | Default           | Description                                      |
-//! |--------------------|-------------------|--------------------------------------------------|
-//! | `OAB_STUB_BOTS`    | `2`               | Number of persistent bot connections to open.    |
-//! | `OPENABC_LISTEN`   | `127.0.0.1:8080`  | Host:port of the running openabc instance.       |
-//! | `OPENABC_WS_TOKEN` | *(unset)*         | If set, appended as `?token=<value>` on `/ws`.   |
+//! | Variable           | Default           | Description                                                  |
+//! |--------------------|-------------------|--------------------------------------------------------------|
+//! | `OAB_STUB_BOTS`    | `2`               | Number of persistent bot connections to open.                |
+//! | `OAB_STUB_LABEL`   | *(unset)*         | If set, each spawned bot runs as a labeled agent (e.g. "A"); |
+//! |                    |                   | routes only events where target_agent == label. Unset →      |
+//! |                    |                   | legacy run_stub_session (processes all events).              |
+//! | `OPENABC_LISTEN`   | `127.0.0.1:8080`  | Host:port of the running openabc instance.                   |
+//! | `OPENABC_WS_TOKEN` | *(unset)*         | If set, appended as `?token=<value>` on `/ws`.               |
 //!
-//! The core logic lives in `openabc::stub_core::run_stub_session` — directly
-//! callable from integration tests without spawning a subprocess.
+//! The core logic lives in `openabc::stub_core::run_stub_session` and
+//! `openabc::stub_core::run_stub_labeled` — directly callable from integration
+//! tests without spawning a subprocess.
 
 use openabc::stub_core;
 
@@ -38,15 +42,29 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
 
-    tracing::info!("oab_stub: connecting {n} persistent bots → {ws_url}");
+    let label = std::env::var("OAB_STUB_LABEL").ok();
+
+    match &label {
+        Some(lbl) => tracing::info!("oab_stub: connecting {n} persistent labeled bots (label={lbl:?}) → {ws_url}"),
+        None => tracing::info!("oab_stub: connecting {n} persistent bots → {ws_url}"),
+    }
 
     let mut join_set = tokio::task::JoinSet::new();
 
     for i in 0..n {
         let url = ws_url.clone();
+        let bot_label = label.clone();
         join_set.spawn(async move {
-            let result = stub_core::run_stub_session(&url, i, None, None).await;
-            (i, result)
+            let result = if let Some(lbl) = bot_label {
+                stub_core::run_stub_labeled(&url, &lbl, None)
+                    .await
+                    .map(|pairs| (i, pairs))
+            } else {
+                stub_core::run_stub_session(&url, i, None, None)
+                    .await
+                    .map(|pairs| (i, pairs))
+            };
+            result
         });
     }
 
@@ -60,11 +78,11 @@ async fn main() -> anyhow::Result<()> {
                         // All bots done.
                         break;
                     }
-                    Some(Ok((i, Ok(pairs)))) => {
+                    Some(Ok(Ok((i, pairs)))) => {
                         tracing::warn!("bot{i} disconnected after {} turns", pairs.len());
                     }
-                    Some(Ok((i, Err(e)))) => {
-                        tracing::error!("bot{i} disconnected with error: {e}");
+                    Some(Ok(Err(e))) => {
+                        tracing::error!("bot disconnected with error: {e}");
                     }
                     Some(Err(e)) => {
                         tracing::error!("bot task panicked: {e}");

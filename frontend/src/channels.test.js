@@ -146,3 +146,32 @@ test('send only affects the target channel', () => {
   expect(store.channel(a).messages.length).toBe(1);
   expect(store.channel(b).messages.length).toBe(0);
 });
+
+// ── E-FE-FRAME-AGENT — send carries agent key when agentId is set ────────────
+
+test('E-FE-FRAME-AGENT: addChannel(name,agentId)+send produces {text,agent:agentId} on wire', () => {
+  const { factory, created } = makeFakeWsFactory();
+  const store = createChannelStore(factory);
+  const id = store.addChannel('A', 'agentA');
+  const ch = store.channel(id);
+  expect(ch.agentId).toBe('agentA');
+  store.send(id, 'hello');
+  const sock = created[0];
+  expect(sock.sent.length).toBe(1);
+  const frame = JSON.parse(sock.sent[0]);
+  expect(frame).toEqual({ text: 'hello', agent: 'agentA' });
+});
+
+// ── E-FE-NO-AGENT — send omits agent key when agentId is absent ──────────────
+
+test('E-FE-NO-AGENT: addChannel(name) without agentId → send produces {text} only, no agent key', () => {
+  const { factory, created } = makeFakeWsFactory();
+  const store = createChannelStore(factory);
+  const id = store.addChannel('Legacy');
+  store.send(id, 'hi');
+  const sock = created[0];
+  expect(sock.sent.length).toBe(1);
+  const frame = JSON.parse(sock.sent[0]);
+  expect(frame).toEqual({ text: 'hi' });
+  expect('agent' in frame).toBe(false);
+});
