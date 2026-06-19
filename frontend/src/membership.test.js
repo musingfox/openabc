@@ -128,6 +128,7 @@ test('OPENAB_MENTION_GATING has correct frozen value', () => {
     skippedWhenInThread: true,
     requiresBotUsername: true,
     matchOn: 'mentions',
+    matchSemantics: 'exact-equality',
   });
 });
 
@@ -201,4 +202,59 @@ test('OPENAB_ALIGNMENT_BLOCKERS covers target_agent, source, and gating topics',
   expect(blob).toContain('target_agent');
   expect(blob).toContain('source');
   expect(blob).toContain('gating');
+});
+
+// ─── E5: OPENAB_ALIGNMENT_BLOCKERS extended to 6+ items ─────────────────────
+
+test('E5 OPENAB_ALIGNMENT_BLOCKERS has the three new ids', () => {
+  const ids = OPENAB_ALIGNMENT_BLOCKERS.map((b) => b.id);
+  expect(ids).toContain('is_bot-drop');
+  expect(ids).toContain('allowed_channels-isolation');
+  expect(ids).toContain('message_id-requirement');
+});
+
+test('E5 OPENAB_ALIGNMENT_BLOCKERS length>=6 and every entry is a one-way door', () => {
+  expect(Array.isArray(OPENAB_ALIGNMENT_BLOCKERS)).toBe(true);
+  expect(OPENAB_ALIGNMENT_BLOCKERS.length).toBeGreaterThanOrEqual(6);
+  for (const b of OPENAB_ALIGNMENT_BLOCKERS) {
+    expect(typeof b.id).toBe('string');
+    expect(typeof b.need).toBe('string');
+    expect(b.door).toBe('one-way');
+  }
+});
+
+test('E5 the three new blockers carry the required need keywords', () => {
+  const byId = Object.fromEntries(
+    OPENAB_ALIGNMENT_BLOCKERS.map((b) => [b.id, b.need.toLowerCase()])
+  );
+  const isBot = byId['is_bot-drop'] ?? '';
+  expect(/allow_bot_messages|trusted_bot_ids/.test(isBot)).toBe(true);
+  const allowed = byId['allowed_channels-isolation'] ?? '';
+  expect(allowed).toContain('allowlist');
+  expect(/before/.test(allowed)).toBe(true);
+  const msgId = byId['message_id-requirement'] ?? '';
+  expect(msgId).toContain('message_id');
+  expect(/streaming|edit/.test(msgId)).toBe(true);
+});
+
+// ─── E6: OPENAB_MENTION_GATING.matchSemantics ────────────────────────────────
+
+test('E6 OPENAB_MENTION_GATING.matchSemantics === exact-equality', () => {
+  expect(OPENAB_MENTION_GATING.matchSemantics).toBe('exact-equality');
+});
+
+// ─── E7: mentionGatePasses exact-equality behavior ───────────────────────────
+
+test("E7 mention '@mybot' does NOT match botUsername 'mybot' -> false (exact-equality)", () => {
+  expect(mentionGatePasses({
+    channelType: 'group', inThread: false,
+    botUsername: 'mybot', mentions: ['@mybot'],
+  })).toBe(false);
+});
+
+test("E7 mention 'mybot' matches botUsername 'mybot' -> true (control)", () => {
+  expect(mentionGatePasses({
+    channelType: 'group', inThread: false,
+    botUsername: 'mybot', mentions: ['mybot'],
+  })).toBe(true);
 });

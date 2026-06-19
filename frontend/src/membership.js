@@ -121,6 +121,7 @@ export const OPENAB_MENTION_GATING = {
   skippedWhenInThread: true,
   requiresBotUsername: true,
   matchOn: 'mentions',
+  matchSemantics: 'exact-equality',
 };
 
 /**
@@ -182,6 +183,21 @@ export const OPENAB_ALIGNMENT_BLOCKERS = [
   {
     id: 'native-channel-type-bypasses-gating',
     need: 'native channel_type is hardcoded in openabc and never triggers mention gating; openab mention-gate logic is unreachable from this gateway',
+    door: 'one-way',
+  },
+  {
+    id: 'is_bot-drop',
+    need: 'openab gateway.rs:638 unconditionally drops events whose sender.is_bot is true; bot-to-bot handoff requires allow_bot_messages / trusted_bot_ids group-level config semantics that do not exist in the current protocol',
+    door: 'one-way',
+  },
+  {
+    id: 'allowed_channels-isolation',
+    need: 'gateway.rs:643-646 filters by channel allowlist before the mention gate; per-channel agent binding requires each channel to be in the allowlist, meaning true isolation is enforced before mention gating can be reached',
+    door: 'one-way',
+  },
+  {
+    id: 'message_id-requirement',
+    need: 'gateway.rs:698 requires a non-empty message_id for streaming replies and edit operations; openabc native channels do not generate or track message_id, blocking streaming and edit flows',
     door: 'one-way',
   },
 ];
