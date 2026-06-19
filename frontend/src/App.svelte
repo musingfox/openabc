@@ -366,6 +366,13 @@
                 {m.text}
               {/if}
             </div>
+            {#if m.from === 'agent' && m.reactions && Object.keys(m.reactions).length > 0}
+              <div class="reactions">
+                {#each Object.entries(m.reactions) as [emoji, count] (emoji)}
+                  <span class="reaction">{emoji} {count}</span>
+                {/each}
+              </div>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -718,4 +725,22 @@
   .conn.open { color: #4caf50; }
   .conn.connecting { color: #ff9800; }
   .conn.reconnecting { color: #f44336; }
+
+  .reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .reaction {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background: var(--accent-bg, rgba(170, 59, 255, 0.08));
+    border: 1px solid var(--accent-border, rgba(170, 59, 255, 0.2));
+    font-size: 0.9em;
+    cursor: default;
+  }
 </style>

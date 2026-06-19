@@ -20,6 +20,44 @@
  */
 
 /**
+ * Reduce a reactions map by applying an add/remove operation for the given emoji text.
+ * Returns a new object; never mutates the input.
+ *
+ * @param {Record<string,number>} reactions — current {emoji:count} map
+ * @param {string} op    — 'add' | 'remove'
+ * @param {string} text  — emoji string
+ * @returns {Record<string,number>}
+ */
+export function reduceReaction(reactions, op, text) {
+  if (!text || (op !== 'add' && op !== 'remove')) return reactions;
+  const copy = { ...reactions };
+  if (op === 'add') {
+    copy[text] = (copy[text] ?? 0) + 1;
+  } else {
+    const next = (copy[text] ?? 0) - 1;
+    if (next <= 0) {
+      delete copy[text];
+    } else {
+      copy[text] = next;
+    }
+  }
+  return copy;
+}
+
+/**
+ * Return the index of the last message with from==='agent', or -1 if none.
+ *
+ * @param {{from:string}[]} messages
+ * @returns {number}
+ */
+export function lastAgentIndex(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].from === 'agent') return i;
+  }
+  return -1;
+}
+
+/**
  * Generate a simple unique id.
  * @returns {string}
  */
@@ -52,8 +90,22 @@ function _ingestRaw(_channels, id, rawData) {
       ...ch.messages,
       { id: uid(), from: 'agent', text: payload.text },
     ];
+  } else if (payload && payload.type === 'reaction') {
+    // reaction frame: attach to last agent message; no-op if missing op/text or no agent msg.
+    const op = payload.op;
+    const text = payload.text;
+    if (op && text) {
+      const idx = lastAgentIndex(ch.messages);
+      if (idx >= 0) {
+        const msgs = [...ch.messages];
+        const msg = { ...msgs[idx] };
+        msg.reactions = reduceReaction(msg.reactions ?? {}, op, text);
+        msgs[idx] = msg;
+        ch.messages = msgs;
+      }
+    }
   }
-  // reaction / other types → silent no-op
+  // other types → silent no-op
 }
 
 /**
