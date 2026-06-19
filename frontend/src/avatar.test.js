@@ -1,6 +1,6 @@
 // Unit tests for stateToSrc, replyToState, revealText, isRevealComplete.
 // Compatible with `bun test` (Bun built-in) and `node --test` (node:test).
-import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender } from './avatar.js';
+import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender, reactionVisual, reduceReactionBurst } from './avatar.js';
 
 // Detect runner: bun vs node:test
 const isBun = typeof Bun !== 'undefined';
@@ -111,6 +111,46 @@ if (isBun) {
     it('E-MSG: message push without text => unchanged', () => {
       const result = reduceMessages([], { type: 'message' });
       expect(result.length).toBe(0);
+    });
+  });
+
+  describe('reaction burst reducer', () => {
+    it('maps known emoji to label and tone metadata', () => {
+      expect(reactionVisual('🤔')).toEqual({ label: '思考中', tone: 'think' });
+      expect(reactionVisual('🎉')).toEqual({ label: '狀態更新', tone: 'neutral' });
+    });
+
+    it('adds a reaction event with expiry metadata', () => {
+      const result = reduceReactionBurst([], { type: 'reaction', op: 'add', text: '👀' }, 1000, 2600);
+      expect(result.length).toBe(1);
+      expect(result[0].emoji).toBe('👀');
+      expect(result[0].count).toBe(1);
+      expect(result[0].expiresAt).toBe(3600);
+    });
+
+    it('aggregates repeated emoji reactions into a count', () => {
+      const first = reduceReactionBurst([], { type: 'reaction', text: '⚡' }, 1000, 2600);
+      const second = reduceReactionBurst(first, { type: 'reaction', text: '⚡' }, 1200, 2600);
+      expect(second.length).toBe(1);
+      expect(second[0].count).toBe(2);
+      expect(second[0].expiresAt).toBe(3800);
+    });
+
+    it('remove reaction clears matching emoji only', () => {
+      const events = [
+        ...reduceReactionBurst([], { type: 'reaction', text: '👀' }, 1000, 2600),
+        ...reduceReactionBurst([], { type: 'reaction', text: '🤔' }, 1000, 2600),
+      ];
+      const result = reduceReactionBurst(events, { type: 'reaction', op: 'remove', text: '👀' }, 1100, 2600);
+      expect(result.map((event) => event.emoji)).toEqual(['🤔']);
+    });
+
+    it('expires old events while preserving live ones', () => {
+      const events = [
+        { id: 'old', emoji: '👀', count: 1, expiresAt: 900 },
+        { id: 'new', emoji: '🤔', count: 1, expiresAt: 2000 },
+      ];
+      expect(reduceReactionBurst(events, null, 1000, 2600)).toEqual([events[1]]);
     });
   });
 

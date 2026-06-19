@@ -1,7 +1,7 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import mermaid from 'mermaid';
-  import { stateToSrc, replyToState, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender } from './avatar.js';
+  import { stateToSrc, replyToState, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender, reduceReactionBurst } from './avatar.js';
   import { createChannelStore, ingestSocketMessage, channelArgs } from './channels.js';
 
   // ── Channel store ──────────────────────────────────────────────────────────
@@ -22,9 +22,14 @@
 
   const CONN_LABEL = { connecting: '連線中…', open: '已連線', reconnecting: '重連中…' };
   const REVEAL_INTERVAL_MS = 30;
+  const REACTION_TTL_MS = 2600;
 
   // Active reveal timers: map from `${channelId}-${msgId}` to timer id.
   let revealTimers = {};
+  let reactionTimers = {};
+  let soundEnabled = $state(false);
+  let activeVoiceId = $state(null);
+  let voiceError = $state('');
 
   // Initialise mermaid once at startup.
   mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
@@ -62,6 +67,44 @@
     }, REVEAL_INTERVAL_MS);
   }
 
+  function defaultChannelMeta() {
+    return {
+      agentState: 'idle',
+      connStatus: 'connecting',
+      revealState: {},
+      reactions: [],
+      reconnectAttempt: 0,
+      reconnectTimer: null,
+    };
+  }
+
+  function scheduleReactionSweep(channelId, expiresAt) {
+    clearTimeout(reactionTimers[channelId]);
+    const delay = Math.max(0, expiresAt - Date.now()) + 20;
+    reactionTimers[channelId] = setTimeout(() => {
+      const meta = channelMeta[channelId];
+      if (!meta) return;
+      const reactions = reduceReactionBurst(meta.reactions ?? [], null, Date.now(), REACTION_TTL_MS);
+      channelMeta = {
+        ...channelMeta,
+        [channelId]: { ...meta, reactions },
+      };
+      const nextExpiry = reactions.reduce((min, event) => Math.min(min, event.expiresAt), Infinity);
+      if (Number.isFinite(nextExpiry)) scheduleReactionSweep(channelId, nextExpiry);
+    }, delay);
+  }
+
+  function ingestReaction(channelId, push) {
+    const meta = channelMeta[channelId] ?? defaultChannelMeta();
+    const reactions = reduceReactionBurst(meta.reactions ?? [], push, Date.now(), REACTION_TTL_MS);
+    channelMeta = {
+      ...channelMeta,
+      [channelId]: { ...meta, reactions },
+    };
+    const nextExpiry = reactions.reduce((min, event) => Math.min(min, event.expiresAt), Infinity);
+    if (Number.isFinite(nextExpiry)) scheduleReactionSweep(channelId, nextExpiry);
+  }
+
   function openChannel(name, agentId) {
     const id = store.addChannel(...channelArgs(name, agentId));
     const ch = store.channel(id);
@@ -70,11 +113,7 @@
     channelMeta = {
       ...channelMeta,
       [id]: {
-        agentState: 'idle',
-        connStatus: 'connecting',
-        revealState: {},
-        reconnectAttempt: 0,
-        reconnectTimer: null,
+        ...defaultChannelMeta(),
       },
     };
 
@@ -94,6 +133,7 @@
 
       // Drive avatar state machine (side-effect only; does not affect messages).
       const agentState = replyToState(obj);
+      if (obj.type === 'reaction') ingestReaction(id, obj);
       const prevMessages = store.channel(id).messages;
 
       // Route the raw frame through the shared ingest fn (production path, tested by probe).
@@ -165,6 +205,7 @@
       let obj = null;
       try { obj = JSON.parse(event.data); } catch { /* ingest handles malformed */ }
       const agentState = obj ? replyToState(obj) : (channelMeta[id]?.agentState ?? 'idle');
+      if (obj?.type === 'reaction') ingestReaction(id, obj);
       const prevMessages = store.channel(id).messages;
 
       // Route through shared ingest (already wired, call again is idempotent for
@@ -204,6 +245,14 @@
     renderMermaidPending();
   });
 
+  onDestroy(() => {
+    Object.values(revealTimers).forEach(clearInterval);
+    Object.values(reactionTimers).forEach(clearTimeout);
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+  });
+
   function addChannel() {
     const name = newChannelName.trim();
     if (!name) return;
@@ -231,6 +280,8 @@
   let agentState = $derived(activeMeta.agentState ?? 'idle');
   let connStatus = $derived(activeMeta.connStatus ?? 'connecting');
   let revealState = $derived(activeMeta.revealState ?? {});
+  let activeReactions = $derived(activeMeta.reactions ?? []);
+  let activeAgentMessage = $derived([...activeMessages].reverse().find((m) => m.from === 'agent'));
 
   // Current input draft.
   let draft = $state('');
@@ -283,6 +334,44 @@
     draft = '';
   }
 
+  function toggleSound() {
+    soundEnabled = !soundEnabled;
+    if (!soundEnabled) stopVoice();
+  }
+
+  function stopVoice() {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    activeVoiceId = null;
+    voiceError = '';
+  }
+
+  function replayVoice(message) {
+    if (!message || !soundEnabled) return;
+    if (typeof window === 'undefined' || !window.speechSynthesis || typeof window.SpeechSynthesisUtterance === 'undefined') {
+      voiceError = '此瀏覽器不支援語音播放';
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new window.SpeechSynthesisUtterance(message.text);
+    utterance.lang = 'zh-TW';
+    activeVoiceId = message.id;
+    voiceError = '';
+    if (activeChannelId) {
+      channelMeta = {
+        ...channelMeta,
+        [activeChannelId]: { ...channelMeta[activeChannelId], agentState: 'speaking' },
+      };
+    }
+    utterance.onend = () => { activeVoiceId = null; };
+    utterance.onerror = () => {
+      activeVoiceId = null;
+      voiceError = '語音播放失敗';
+    };
+    window.speechSynthesis.speak(utterance);
+  }
+
   function onKey(e) {
     if (e.key === 'Enter') send();
   }
@@ -305,23 +394,20 @@
 </script>
 
 <main>
-  <h1>openabc agent avatar</h1>
-
   <div class="layout">
     <!-- ── Channel sidebar ── -->
     <aside class="channels-panel">
       <div class="channels-header">頻道</div>
       <ul class="channel-list">
         {#each channelList as ch (ch.id)}
-          <li
-            class="channel-item{ch.id === activeChannelId ? ' active' : ''}"
-            onclick={() => switchChannel(ch.id)}
-            role="button"
-            tabindex="0"
-            onkeydown={(e) => e.key === 'Enter' && switchChannel(ch.id)}
-          >
-            <span class="ch-dot {channelMeta[ch.id]?.connStatus ?? 'connecting'}">●</span>
-            <span class="ch-name">{ch.name}</span>
+          <li class="channel-row">
+            <button
+              class="channel-item{ch.id === activeChannelId ? ' active' : ''}"
+              onclick={() => switchChannel(ch.id)}
+            >
+              <span class="ch-dot {channelMeta[ch.id]?.connStatus ?? 'connecting'}">●</span>
+              <span class="ch-name">{ch.name}</span>
+            </button>
           </li>
         {/each}
       </ul>
@@ -344,15 +430,43 @@
 
     <!-- ── Main chat area ── -->
     <section class="chat-area">
-      <div class="avatar">
-        <img src={stateToSrc(agentState)} alt={agentState} width="64" height="64" />
-        <p>State: <strong>{agentState}</strong></p>
-        <p class="conn {connStatus}">● {CONN_LABEL[connStatus] ?? connStatus}</p>
+      <div class="agent-rail" aria-label="agent presence">
+        <div class="avatar-shell {agentState}">
+          <img src={stateToSrc(agentState)} alt={`agent ${agentState}`} width="104" height="104" />
+        </div>
+        <div class="agent-copy">
+          <p class="agent-name">openabc</p>
+          <p class="agent-state">{agentState}</p>
+          <p class="conn {connStatus}">● {CONN_LABEL[connStatus] ?? connStatus}</p>
+        </div>
+        <div class="voice-panel" aria-label="語音控制">
+          <button
+            class:enabled={soundEnabled}
+            aria-pressed={soundEnabled}
+            onclick={toggleSound}
+            title={soundEnabled ? '關閉語音' : '開啟語音'}
+          >
+            {soundEnabled ? '聲音開' : '靜音'}
+          </button>
+          <button
+            disabled={!soundEnabled || !activeAgentMessage}
+            onclick={() => replayVoice(activeAgentMessage)}
+            title="重播最近一則 agent 回覆"
+          >
+            重播
+          </button>
+          {#if activeVoiceId}
+            <button onclick={stopVoice} title="停止播放">停止</button>
+          {/if}
+        </div>
+        {#if voiceError}
+          <p class="voice-error">{voiceError}</p>
+        {/if}
       </div>
 
-      <ul id="messages" style="max-height:40vh;overflow-y:auto">
+      <ul id="messages">
         {#each activeMessages as m (m.id)}
-          <li class={m.from}>
+          <li class="{m.from}{m.id === activeVoiceId ? ' voice-playing' : ''}">
             <span class="label">{m.from}</span>
             <div class="bubble{m.from === 'agent' && !isRevealComplete(m.text, revealState[m.id] ?? 0) ? ' revealing' : ''}">
               {#if m.from === 'agent'}
@@ -366,16 +480,34 @@
                 {m.text}
               {/if}
             </div>
-            {#if m.from === 'agent' && m.reactions && Object.keys(m.reactions).length > 0}
-              <div class="reactions">
-                {#each Object.entries(m.reactions) as [emoji, count] (emoji)}
-                  <span class="reaction">{emoji} {count}</span>
-                {/each}
+            {#if m.from === 'agent'}
+              <div class="message-tools">
+                <button
+                  disabled={!soundEnabled}
+                  onclick={() => replayVoice(m)}
+                  title={soundEnabled ? '播放此回覆' : '先開啟聲音'}
+                >
+                  {m.id === activeVoiceId ? '播放中' : '聽'}
+                </button>
               </div>
             {/if}
           </li>
         {/each}
       </ul>
+
+      {#if activeReactions.length}
+        <div class="reaction-burst" aria-live="polite">
+          {#each activeReactions as reaction (reaction.id)}
+            <span class="reaction-chip {reaction.tone}">
+              <span class="reaction-emoji">{reaction.emoji}</span>
+              {#if reaction.count > 1}
+                <span class="reaction-count">×{reaction.count}</span>
+              {/if}
+              <span class="reaction-label">{reaction.label}</span>
+            </span>
+          {/each}
+        </div>
+      {/if}
 
       <div class="composer">
         <input
@@ -401,8 +533,6 @@
     box-sizing: border-box;
     text-align: left;
   }
-
-  h1 { text-align: center; }
 
   .layout {
     display: flex;
@@ -442,11 +572,17 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    width: calc(100% - 8px);
     padding: 7px 12px;
     cursor: pointer;
     border-radius: 6px;
     margin: 2px 4px;
     font-size: 0.92em;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
   }
 
   .channel-item:hover {
@@ -726,21 +862,344 @@
   .conn.connecting { color: #ff9800; }
   .conn.reconnecting { color: #f44336; }
 
-  .reactions {
+  main {
+    max-width: 1180px;
+    min-height: 100svh;
+    padding: 24px;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 190px minmax(0, 1fr);
+    gap: 18px;
+    align-items: stretch;
+  }
+
+  .channels-panel {
+    width: auto;
+    min-height: calc(100svh - 48px);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg) 94%, var(--border));
+  }
+
+  .chat-area {
+    display: grid;
+    grid-template-columns: 168px minmax(0, 1fr);
+    grid-template-rows: 1fr auto auto auto;
+    gap: 14px 18px;
+    min-height: calc(100svh - 48px);
+  }
+
+  .agent-rail {
+    grid-row: 1 / 5;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    padding: 16px 14px;
+    border-right: 1px solid var(--border, #e5e4e7);
+  }
+
+  .avatar-shell {
+    width: 128px;
+    height: 128px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--border, #e5e4e7);
+    border-radius: 8px;
+    background: #f4f3ec;
+    overflow: hidden;
+  }
+
+  .avatar-shell img {
+    width: 104px;
+    height: 104px;
+    image-rendering: pixelated;
+  }
+
+  .avatar-shell.speaking img {
+    animation: speak-bob 680ms ease-in-out infinite;
+  }
+
+  .avatar-shell.listening {
+    box-shadow: inset 0 0 0 2px rgba(42, 157, 143, 0.35);
+  }
+
+  .avatar-shell.thinking {
+    box-shadow: inset 0 0 0 2px rgba(233, 196, 106, 0.55);
+  }
+
+  .agent-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .agent-name {
+    color: var(--text-h);
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .agent-state {
+    font-family: var(--mono, monospace);
+    font-size: 0.78em;
+    color: var(--accent);
+  }
+
+  .voice-panel {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .voice-panel button,
+  .message-tools button {
+    min-height: 36px;
+    border-radius: 8px;
+    border: 1px solid var(--border, #e5e4e7);
+    background: var(--bg);
+    color: inherit;
+    font: inherit;
+    font-size: 0.82em;
+    cursor: pointer;
+  }
+
+  .voice-panel button.enabled {
+    border-color: rgba(42, 157, 143, 0.7);
+    background: rgba(42, 157, 143, 0.12);
+    color: var(--text-h);
+  }
+
+  .voice-panel button:disabled,
+  .message-tools button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+
+  .voice-error {
+    font-size: 0.78em;
+    color: #c2410c;
+    line-height: 1.35;
+  }
+
+  #messages {
+    min-height: 0;
+    max-height: none;
+    height: calc(100svh - 170px);
+    margin: 0;
+    padding: 6px 4px 12px;
+    gap: 14px;
+  }
+
+  #messages li {
+    position: relative;
+    max-width: min(760px, 92%);
+  }
+
+  #messages li.agent {
+    width: auto;
+  }
+
+  #messages li.voice-playing .bubble {
+    border-color: rgba(42, 157, 143, 0.7);
+    box-shadow: 0 0 0 2px rgba(42, 157, 143, 0.1);
+  }
+
+  .bubble {
+    border-radius: 8px;
+  }
+
+  .message-tools {
+    display: flex;
+    justify-content: flex-start;
+    margin-top: 5px;
+  }
+
+  .message-tools button {
+    min-width: 48px;
+    min-height: 32px;
+  }
+
+  .reaction-burst {
+    grid-column: 2;
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 4px;
+    gap: 8px;
+    min-height: 38px;
+    align-items: center;
   }
-  .reaction {
+
+  .reaction-chip {
     display: inline-flex;
     align-items: center;
-    gap: 2px;
-    padding: 2px 8px;
-    border-radius: 12px;
-    background: var(--accent-bg, rgba(170, 59, 255, 0.08));
-    border: 1px solid var(--accent-border, rgba(170, 59, 255, 0.2));
-    font-size: 0.9em;
-    cursor: default;
+    gap: 6px;
+    min-height: 34px;
+    padding: 5px 10px;
+    border: 1px solid var(--border, #e5e4e7);
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--text-h);
+    box-shadow: 0 8px 24px rgba(8, 6, 13, 0.08);
+    animation: reaction-rise 2600ms ease-out forwards;
+  }
+
+  .reaction-chip.listen { border-color: rgba(42, 157, 143, 0.45); }
+  .reaction-chip.think { border-color: rgba(233, 196, 106, 0.65); }
+  .reaction-chip.act { border-color: rgba(59, 130, 246, 0.45); }
+  .reaction-chip.done { border-color: rgba(34, 197, 94, 0.45); }
+  .reaction-chip.warn { border-color: rgba(220, 38, 38, 0.45); }
+
+  .reaction-emoji {
+    font-size: 1.15em;
+    line-height: 1;
+  }
+
+  .reaction-count,
+  .reaction-label {
+    font-size: 0.78em;
+    line-height: 1;
+  }
+
+  .composer {
+    grid-column: 2;
+    margin: 0;
+    justify-content: stretch;
+  }
+
+  .composer input {
+    max-width: none;
+    min-height: 44px;
+    border-radius: 8px;
+  }
+
+  .composer button {
+    min-width: 72px;
+    min-height: 44px;
+    border-radius: 8px;
+  }
+
+  .fallback {
+    grid-column: 2;
+    justify-self: end;
+    margin: 0;
+  }
+
+  @keyframes speak-bob {
+    0%, 100% { transform: translateY(0) scale(1); }
+    50% { transform: translateY(-2px) scale(1.02); }
+  }
+
+  @keyframes reaction-rise {
+    0% { opacity: 0; transform: translateY(10px) scale(0.96); }
+    12% { opacity: 1; transform: translateY(0) scale(1); }
+    84% { opacity: 1; transform: translateY(-4px) scale(1); }
+    100% { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .avatar-shell {
+      background: #1f2028;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .avatar-shell.speaking img,
+    .reaction-chip,
+    .bubble.revealing::after {
+      animation: none;
+    }
+  }
+
+  @media (max-width: 760px) {
+    main {
+      padding: 0;
+    }
+
+    .layout {
+      grid-template-columns: 1fr;
+      gap: 0;
+    }
+
+    .channels-panel {
+      min-height: 0;
+      border-radius: 0;
+      border-inline: 0;
+      border-top: 0;
+    }
+
+    .channel-list {
+      display: flex;
+      overflow-x: auto;
+      padding: 6px;
+    }
+
+    .channel-item {
+      min-width: 112px;
+      min-height: 36px;
+      width: auto;
+    }
+
+    .new-channel {
+      display: grid;
+      grid-template-columns: 1fr 1fr 40px;
+    }
+
+    .chat-area {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto 1fr auto auto auto;
+      min-height: calc(100svh - 116px);
+      padding: 12px;
+    }
+
+    .agent-rail {
+      grid-row: auto;
+      flex-direction: row;
+      align-items: center;
+      padding: 10px 0 12px;
+      border-right: 0;
+      border-bottom: 1px solid var(--border, #e5e4e7);
+    }
+
+    .avatar-shell {
+      width: 72px;
+      height: 72px;
+      flex: 0 0 auto;
+    }
+
+    .avatar-shell img {
+      width: 58px;
+      height: 58px;
+    }
+
+    .agent-copy {
+      min-width: 82px;
+      flex: 1;
+    }
+
+    .voice-panel {
+      width: 132px;
+      flex: 0 0 auto;
+    }
+
+    #messages {
+      height: 42svh;
+      min-height: 220px;
+      grid-column: 1;
+    }
+
+    .reaction-burst,
+    .composer,
+    .fallback {
+      grid-column: 1;
+    }
+
+    #messages li {
+      max-width: 96%;
+    }
+
+    .reaction-label {
+      display: none;
+    }
   }
 </style>
