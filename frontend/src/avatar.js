@@ -87,6 +87,55 @@ const EMOJI_STATE = {
   '💪': 'speaking',
 };
 
+const REACTION_META = {
+  '👀': { label: '已收到', tone: 'listen' },
+  '🤔': { label: '思考中', tone: 'think' },
+  '🔥': { label: '工具執行', tone: 'act' },
+  '👨‍💻': { label: '撰寫中', tone: 'act' },
+  '⚡': { label: '處理中', tone: 'act' },
+  '🆗': { label: '完成', tone: 'done' },
+  '😱': { label: '發生錯誤', tone: 'warn' },
+  '🥱': { label: '等待較久', tone: 'think' },
+  '😨': { label: '可能卡住', tone: 'warn' },
+  '💪': { label: '繼續處理', tone: 'act' },
+};
+
+export function reactionVisual(emoji) {
+  return REACTION_META[emoji] ?? { label: '狀態更新', tone: 'neutral' };
+}
+
+export function reduceReactionBurst(events, push, now = Date.now(), ttlMs = 2600) {
+  const current = Array.isArray(events)
+    ? events.filter((event) => event && event.expiresAt > now)
+    : [];
+  if (!push || push.type !== 'reaction' || typeof push.text !== 'string') return current;
+
+  if (push.op === 'remove') {
+    return current.filter((event) => event.emoji !== push.text);
+  }
+
+  const existing = current.find((event) => event.emoji === push.text);
+  if (existing) {
+    return current.map((event) => event.emoji === push.text
+      ? { ...event, count: event.count + 1, updatedAt: now, expiresAt: now + ttlMs }
+      : event);
+  }
+
+  const visual = reactionVisual(push.text);
+  return [
+    ...current,
+    {
+      id: `${push.text}-${now}`,
+      emoji: push.text,
+      count: 1,
+      label: visual.label,
+      tone: visual.tone,
+      updatedAt: now,
+      expiresAt: now + ttlMs,
+    },
+  ];
+}
+
 /**
  * Pure function: infer agent state from a gateway reply message.
  * - reply with type "reaction" and op!=="remove": emoji -> state via EMOJI_STATE (unknown emoji -> 'idle')
