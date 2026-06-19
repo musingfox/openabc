@@ -91,3 +91,97 @@ export const OPENAB_LIMITS = {
   eventHasMembership: false,
   targetAgentIsSingleValue: true,
 };
+
+// ─── E1: openab identity model facts ─────────────────────────────────────────
+
+/**
+ * Frozen record of how openab identifies its bots/agents.
+ * identityKey: the config field that names the bot.
+ * identitySource: where the identity is configured.
+ * runtimeAddressingField: no runtime field carries bot identity in GatewayEvent/Reply.
+ * isolationModel: one bot process per pod.
+ * handoffMechanism: bots are addressed via @mention in group chats.
+ */
+export const OPENAB_IDENTITY = {
+  identityKey: 'bot_username',
+  identitySource: 'config',
+  runtimeAddressingField: null,
+  isolationModel: 'per-pod',
+  handoffMechanism: 'mention',
+};
+
+// ─── E2: mention gating facts + pure function ─────────────────────────────────
+
+/**
+ * Frozen record of openab's mention-gating rules (gateway.rs:656-665).
+ */
+export const OPENAB_MENTION_GATING = {
+  requiresGroup: true,
+  groupTypes: ['group', 'supergroup'],
+  skippedWhenInThread: true,
+  requiresBotUsername: true,
+  matchOn: 'mentions',
+};
+
+/**
+ * Pure function: does this message pass mention gating and get processed by the bot?
+ * true = processed/passed, false = skipped.
+ * Mirrors openab gateway.rs:656-665 truth table.
+ *
+ * @param {{ channelType: string, inThread: boolean, botUsername: string|null|undefined, mentions: string[]|undefined }} param
+ * @returns {boolean}
+ */
+export function mentionGatePasses({ channelType, inThread, botUsername, mentions }) {
+  const isGroup = channelType === 'group' || channelType === 'supergroup';
+  // Non-group channels: no gating, always pass
+  if (!isGroup) return true;
+  // Group but in thread: no gating, always pass
+  if (inThread) return true;
+  // Group, not in thread, but no botUsername configured: no gating, always pass
+  if (!botUsername) return true;
+  // Group, not in thread, botUsername present: gating by mention
+  const safeM = mentions ?? [];
+  return safeM.includes(botUsername);
+}
+
+// ─── E3: agent descriptor ─────────────────────────────────────────────────────
+
+/**
+ * Build a typed agent descriptor. Throws if localId is falsy.
+ * Defaults: openabBotUsername -> null, label -> localId.
+ *
+ * @param {{ localId: string, label?: string, openabBotUsername?: string|null }} param
+ * @returns {{ localId: string, label: string, openabBotUsername: string|null }}
+ */
+export function agentDescriptor({ localId, label, openabBotUsername } = {}) {
+  if (!localId) throw new Error('agentDescriptor: localId is required');
+  return {
+    localId,
+    label: label !== undefined ? label : localId,
+    openabBotUsername: openabBotUsername !== undefined ? openabBotUsername : null,
+  };
+}
+
+// ─── E4: openab alignment blockers ───────────────────────────────────────────
+
+/**
+ * One-way-door blockers that prevent full openab alignment today.
+ * Each entry: { id: string, need: string, door: 'one-way' }.
+ */
+export const OPENAB_ALIGNMENT_BLOCKERS = [
+  {
+    id: 'no-target_agent-in-openab',
+    need: 'GatewayEvent target_agent has no openab counterpart field; openab core cannot route by it without a protocol extension',
+    door: 'one-way',
+  },
+  {
+    id: 'no-source-in-reply',
+    need: 'GatewayReply carries no source field identifying which agent produced the reply; UI cannot attribute messages to specific bots',
+    door: 'one-way',
+  },
+  {
+    id: 'native-channel-type-bypasses-gating',
+    need: 'native channel_type is hardcoded in openabc and never triggers mention gating; openab mention-gate logic is unreachable from this gateway',
+    door: 'one-way',
+  },
+];

@@ -6,6 +6,11 @@ import {
   routingTargetFor,
   routingAmbiguous,
   OPENAB_LIMITS,
+  OPENAB_IDENTITY,
+  OPENAB_MENTION_GATING,
+  mentionGatePasses,
+  agentDescriptor,
+  OPENAB_ALIGNMENT_BLOCKERS,
 } from './membership.js';
 import { channelArgs } from './channels.js';
 
@@ -100,4 +105,100 @@ test('OPENAB_LIMITS records the three blocking flags', () => {
   expect(OPENAB_LIMITS.replyHasSource).toBe(false);
   expect(OPENAB_LIMITS.eventHasMembership).toBe(false);
   expect(OPENAB_LIMITS.targetAgentIsSingleValue).toBe(true);
+});
+
+// ─── E1: OPENAB_IDENTITY ──────────────────────────────────────────────────────
+
+test('OPENAB_IDENTITY has correct frozen value', () => {
+  expect(OPENAB_IDENTITY).toEqual({
+    identityKey: 'bot_username',
+    identitySource: 'config',
+    runtimeAddressingField: null,
+    isolationModel: 'per-pod',
+    handoffMechanism: 'mention',
+  });
+});
+
+// ─── E2: OPENAB_MENTION_GATING + mentionGatePasses ───────────────────────────
+
+test('OPENAB_MENTION_GATING has correct frozen value', () => {
+  expect(OPENAB_MENTION_GATING).toEqual({
+    requiresGroup: true,
+    groupTypes: ['group', 'supergroup'],
+    skippedWhenInThread: true,
+    requiresBotUsername: true,
+    matchOn: 'mentions',
+  });
+});
+
+test('mentionGatePasses: group not in thread, mention hit -> true', () => {
+  expect(mentionGatePasses({ channelType: 'group', inThread: false, botUsername: 'mybot', mentions: ['mybot'] })).toBe(true);
+});
+
+test('mentionGatePasses: group not in thread, mention miss -> false', () => {
+  expect(mentionGatePasses({ channelType: 'group', inThread: false, botUsername: 'mybot', mentions: ['other'] })).toBe(false);
+});
+
+test('mentionGatePasses: private channel -> true (no gating)', () => {
+  expect(mentionGatePasses({ channelType: 'private', inThread: false, botUsername: 'mybot', mentions: [] })).toBe(true);
+});
+
+test('mentionGatePasses: group in thread -> true (thread not gated)', () => {
+  expect(mentionGatePasses({ channelType: 'group', inThread: true, botUsername: 'mybot', mentions: [] })).toBe(true);
+});
+
+test('mentionGatePasses: group !thread null botUsername -> true', () => {
+  expect(mentionGatePasses({ channelType: 'group', inThread: false, botUsername: null, mentions: ['x'] })).toBe(true);
+});
+
+test('mentionGatePasses: group !thread undefined botUsername -> true', () => {
+  expect(mentionGatePasses({ channelType: 'group', inThread: false, botUsername: undefined, mentions: ['x'] })).toBe(true);
+});
+
+test('mentionGatePasses: supergroup mention hit -> true', () => {
+  expect(mentionGatePasses({ channelType: 'supergroup', inThread: false, botUsername: 'mybot', mentions: ['mybot', 'other'] })).toBe(true);
+});
+
+test('mentionGatePasses: mentions undefined is safe (group, miss) -> false', () => {
+  expect(mentionGatePasses({ channelType: 'group', inThread: false, botUsername: 'mybot', mentions: undefined })).toBe(false);
+});
+
+// ─── E3: agentDescriptor ─────────────────────────────────────────────────────
+
+test('agentDescriptor full fields', () => {
+  expect(agentDescriptor({ localId: 'ch1', label: 'Alice', openabBotUsername: 'alice_bot' }))
+    .toEqual({ localId: 'ch1', label: 'Alice', openabBotUsername: 'alice_bot' });
+});
+
+test('agentDescriptor defaults: label -> localId, openabBotUsername -> null', () => {
+  expect(agentDescriptor({ localId: 'ch1' }))
+    .toEqual({ localId: 'ch1', label: 'ch1', openabBotUsername: null });
+});
+
+test('agentDescriptor missing localId throws', () => {
+  expect(() => agentDescriptor({ label: 'x' })).toThrow();
+  expect(() => agentDescriptor({})).toThrow();
+  expect(() => agentDescriptor({ localId: '' })).toThrow();
+});
+
+// ─── E4: OPENAB_ALIGNMENT_BLOCKERS ───────────────────────────────────────────
+
+test('OPENAB_ALIGNMENT_BLOCKERS is an array of at least 3 items', () => {
+  expect(Array.isArray(OPENAB_ALIGNMENT_BLOCKERS)).toBe(true);
+  expect(OPENAB_ALIGNMENT_BLOCKERS.length).toBeGreaterThanOrEqual(3);
+});
+
+test('OPENAB_ALIGNMENT_BLOCKERS all items have id, need, door=one-way', () => {
+  for (const b of OPENAB_ALIGNMENT_BLOCKERS) {
+    expect(typeof b.id).toBe('string');
+    expect(typeof b.need).toBe('string');
+    expect(b.door).toBe('one-way');
+  }
+});
+
+test('OPENAB_ALIGNMENT_BLOCKERS covers target_agent, source, and gating topics', () => {
+  const blob = JSON.stringify(OPENAB_ALIGNMENT_BLOCKERS).toLowerCase();
+  expect(blob).toContain('target_agent');
+  expect(blob).toContain('source');
+  expect(blob).toContain('gating');
 });
