@@ -1,20 +1,19 @@
 <script>
   import { onDestroy, onMount } from 'svelte';
   import mermaid from 'mermaid';
-  import { stateToSrc, replyToState, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender, reduceReactionBurst } from './avatar.js';
-  import { createChannelStore, ingestSocketMessage, channelArgs } from './channels.js';
+  import { stateToSrc, replyToState, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender } from './avatar.js';
+  import { createChannelStore, ingestSocketMessage } from './channels.js';
 
   // ── Channel store ──────────────────────────────────────────────────────────
   // Each channel holds its own independent /native/ws connection.
   const store = createChannelStore();
 
-  // Reactive channel list and active selection.
+  // Reactive conversation list and active selection.
   let channelList = $state([]);
   let activeChannelId = $state(null);
 
-  // New channel name and agent id inputs.
-  let newChannelName = $state('');
-  let newChannelAgent = $state('');
+  // Monotonic counter for auto-naming new conversations ("對話 N").
+  let convoCounter = 0;
 
   // Per-channel state: agentState, connStatus, revealState, reconnect trackers.
   // Keyed by channelId.
@@ -22,11 +21,13 @@
 
   const CONN_LABEL = { connecting: '連線中…', open: '已連線', reconnecting: '重連中…' };
   const REVEAL_INTERVAL_MS = 30;
-  const REACTION_TTL_MS = 2600;
+
+  // Friendly persistent labels for the agent presence state (single status output;
+  // replaces the old ephemeral reaction-chip burst rail).
+  const STATE_LABEL = { idle: '待命', listening: '已收到', thinking: '思考中', speaking: '回覆中' };
 
   // Active reveal timers: map from `${channelId}-${msgId}` to timer id.
   let revealTimers = {};
-  let reactionTimers = {};
   let soundEnabled = $state(false);
   let activeVoiceId = $state(null);
   let voiceError = $state('');
@@ -72,41 +73,13 @@
       agentState: 'idle',
       connStatus: 'connecting',
       revealState: {},
-      reactions: [],
       reconnectAttempt: 0,
       reconnectTimer: null,
     };
   }
 
-  function scheduleReactionSweep(channelId, expiresAt) {
-    clearTimeout(reactionTimers[channelId]);
-    const delay = Math.max(0, expiresAt - Date.now()) + 20;
-    reactionTimers[channelId] = setTimeout(() => {
-      const meta = channelMeta[channelId];
-      if (!meta) return;
-      const reactions = reduceReactionBurst(meta.reactions ?? [], null, Date.now(), REACTION_TTL_MS);
-      channelMeta = {
-        ...channelMeta,
-        [channelId]: { ...meta, reactions },
-      };
-      const nextExpiry = reactions.reduce((min, event) => Math.min(min, event.expiresAt), Infinity);
-      if (Number.isFinite(nextExpiry)) scheduleReactionSweep(channelId, nextExpiry);
-    }, delay);
-  }
-
-  function ingestReaction(channelId, push) {
-    const meta = channelMeta[channelId] ?? defaultChannelMeta();
-    const reactions = reduceReactionBurst(meta.reactions ?? [], push, Date.now(), REACTION_TTL_MS);
-    channelMeta = {
-      ...channelMeta,
-      [channelId]: { ...meta, reactions },
-    };
-    const nextExpiry = reactions.reduce((min, event) => Math.min(min, event.expiresAt), Infinity);
-    if (Number.isFinite(nextExpiry)) scheduleReactionSweep(channelId, nextExpiry);
-  }
-
-  function openChannel(name, agentId) {
-    const id = store.addChannel(...channelArgs(name, agentId));
+  function openChannel(name) {
+    const id = store.addChannel(name);
     const ch = store.channel(id);
 
     // Per-channel meta defaults.
@@ -133,7 +106,6 @@
 
       // Drive avatar state machine (side-effect only; does not affect messages).
       const agentState = replyToState(obj);
-      if (obj.type === 'reaction') ingestReaction(id, obj);
       const prevMessages = store.channel(id).messages;
 
       // Route the raw frame through the shared ingest fn (production path, tested by probe).
@@ -205,7 +177,6 @@
       let obj = null;
       try { obj = JSON.parse(event.data); } catch { /* ingest handles malformed */ }
       const agentState = obj ? replyToState(obj) : (channelMeta[id]?.agentState ?? 'idle');
-      if (obj?.type === 'reaction') ingestReaction(id, obj);
       const prevMessages = store.channel(id).messages;
 
       // Route through shared ingest (already wired, call again is idempotent for
@@ -239,26 +210,22 @@
     };
   }
 
-  // Add the default channel on mount.
+  // Open the first conversation on mount.
   onMount(() => {
-    openChannel('預設頻道');
+    newConversation();
     renderMermaidPending();
   });
 
   onDestroy(() => {
     Object.values(revealTimers).forEach(clearInterval);
-    Object.values(reactionTimers).forEach(clearTimeout);
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
   });
 
-  function addChannel() {
-    const name = newChannelName.trim();
-    if (!name) return;
-    openChannel(name, newChannelAgent.trim());
-    newChannelName = '';
-    newChannelAgent = '';
+  // One-click new conversation: auto-named "對話 N", opened and activated.
+  function newConversation() {
+    openChannel(`對話 ${++convoCounter}`);
   }
 
   function switchChannel(id) {
@@ -280,7 +247,6 @@
   let agentState = $derived(activeMeta.agentState ?? 'idle');
   let connStatus = $derived(activeMeta.connStatus ?? 'connecting');
   let revealState = $derived(activeMeta.revealState ?? {});
-  let activeReactions = $derived(activeMeta.reactions ?? []);
   let activeAgentMessage = $derived([...activeMessages].reverse().find((m) => m.from === 'agent'));
 
   // Current input draft.
@@ -375,29 +341,14 @@
   function onKey(e) {
     if (e.key === 'Enter') send();
   }
-
-  function addChannelOnKey(e) {
-    if (e.key === 'Enter') addChannel();
-  }
-
-  const states = ['idle', 'speaking', 'listening', 'thinking'];
-
-  function nextState() {
-    const idx = states.indexOf(agentState);
-    if (activeChannelId) {
-      channelMeta = {
-        ...channelMeta,
-        [activeChannelId]: { ...channelMeta[activeChannelId], agentState: states[(idx + 1) % states.length] },
-      };
-    }
-  }
 </script>
 
 <main>
   <div class="layout">
     <!-- ── Channel sidebar ── -->
     <aside class="channels-panel">
-      <div class="channels-header">頻道</div>
+      <div class="channels-header">對話</div>
+      <button class="new-convo" onclick={newConversation}>＋ 新對話</button>
       <ul class="channel-list">
         {#each channelList as ch (ch.id)}
           <li class="channel-row">
@@ -411,21 +362,6 @@
           </li>
         {/each}
       </ul>
-      <div class="new-channel">
-        <input
-          type="text"
-          placeholder="新頻道名稱…"
-          bind:value={newChannelName}
-          onkeydown={addChannelOnKey}
-        />
-        <input
-          type="text"
-          placeholder="Agent ID（選填）"
-          bind:value={newChannelAgent}
-          onkeydown={addChannelOnKey}
-        />
-        <button onclick={addChannel}>+</button>
-      </div>
     </aside>
 
     <!-- ── Main chat area ── -->
@@ -436,7 +372,7 @@
         </div>
         <div class="agent-copy">
           <p class="agent-name">openabc</p>
-          <p class="agent-state">{agentState}</p>
+          <p class="agent-state">{STATE_LABEL[agentState] ?? agentState}</p>
           <p class="conn {connStatus}">● {CONN_LABEL[connStatus] ?? connStatus}</p>
         </div>
         <div class="voice-panel" aria-label="語音控制">
@@ -495,20 +431,6 @@
         {/each}
       </ul>
 
-      {#if activeReactions.length}
-        <div class="reaction-burst" aria-live="polite">
-          {#each activeReactions as reaction (reaction.id)}
-            <span class="reaction-chip {reaction.tone}">
-              <span class="reaction-emoji">{reaction.emoji}</span>
-              {#if reaction.count > 1}
-                <span class="reaction-count">×{reaction.count}</span>
-              {/if}
-              <span class="reaction-label">{reaction.label}</span>
-            </span>
-          {/each}
-        </div>
-      {/if}
-
       <div class="composer">
         <input
           id="input"
@@ -519,8 +441,6 @@
         />
         <button onclick={send}>送出</button>
       </div>
-
-      <button class="fallback" onclick={nextState}>next state (fallback)</button>
     </section>
   </div>
 </main>
@@ -590,8 +510,9 @@
   }
 
   .channel-item.active {
-    background: var(--accent-bg, rgba(170, 59, 255, 0.15));
+    background: var(--accent-bg, rgba(170, 59, 255, 0.18));
     font-weight: 600;
+    box-shadow: inset 3px 0 0 var(--accent-border, rgba(170, 59, 255, 0.8));
   }
 
   .ch-dot {
@@ -608,34 +529,22 @@
     white-space: nowrap;
   }
 
-  .new-channel {
-    display: flex;
-    border-top: 1px solid var(--border, #2e303a);
-    padding: 6px;
-    gap: 4px;
-  }
-
-  .new-channel input {
-    flex: 1;
-    min-width: 0;
-    padding: 6px 8px;
-    border-radius: 6px;
-    border: 1px solid var(--border, #2e303a);
-    background: var(--bg, #16171d);
-    color: inherit;
-    font: inherit;
-    font-size: 0.88em;
-  }
-
-  .new-channel button {
-    padding: 6px 10px;
-    border-radius: 6px;
+  .new-convo {
+    margin: 8px;
+    padding: 9px 12px;
+    border-radius: 8px;
     border: 1px solid var(--accent-border, rgba(170, 59, 255, 0.5));
     background: var(--accent-bg, rgba(170, 59, 255, 0.12));
     color: inherit;
     cursor: pointer;
-    font-size: 1em;
-    line-height: 1;
+    font: inherit;
+    font-size: 0.9em;
+    font-weight: 600;
+    text-align: center;
+  }
+
+  .new-convo:hover {
+    background: var(--accent-bg, rgba(170, 59, 255, 0.22));
   }
 
   /* ── Chat area ── */
@@ -844,18 +753,6 @@
     color: inherit;
     cursor: pointer;
   }
-  .fallback {
-    display: block;
-    margin: 4px auto 0;
-    padding: 6px 12px;
-    font-size: 0.8em;
-    opacity: 0.6;
-    background: none;
-    border: 1px solid var(--border, #2e303a);
-    border-radius: 8px;
-    color: inherit;
-    cursor: pointer;
-  }
 
   .conn { margin: 0; font-size: 0.85em; }
   .conn.open { color: #4caf50; }
@@ -1021,46 +918,6 @@
     min-height: 32px;
   }
 
-  .reaction-burst {
-    grid-column: 2;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    min-height: 38px;
-    align-items: center;
-  }
-
-  .reaction-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 34px;
-    padding: 5px 10px;
-    border: 1px solid var(--border, #e5e4e7);
-    border-radius: 999px;
-    background: var(--bg);
-    color: var(--text-h);
-    box-shadow: 0 8px 24px rgba(8, 6, 13, 0.08);
-    animation: reaction-rise 2600ms ease-out forwards;
-  }
-
-  .reaction-chip.listen { border-color: rgba(42, 157, 143, 0.45); }
-  .reaction-chip.think { border-color: rgba(233, 196, 106, 0.65); }
-  .reaction-chip.act { border-color: rgba(59, 130, 246, 0.45); }
-  .reaction-chip.done { border-color: rgba(34, 197, 94, 0.45); }
-  .reaction-chip.warn { border-color: rgba(220, 38, 38, 0.45); }
-
-  .reaction-emoji {
-    font-size: 1.15em;
-    line-height: 1;
-  }
-
-  .reaction-count,
-  .reaction-label {
-    font-size: 0.78em;
-    line-height: 1;
-  }
-
   .composer {
     grid-column: 2;
     margin: 0;
@@ -1079,22 +936,9 @@
     border-radius: 8px;
   }
 
-  .fallback {
-    grid-column: 2;
-    justify-self: end;
-    margin: 0;
-  }
-
   @keyframes speak-bob {
     0%, 100% { transform: translateY(0) scale(1); }
     50% { transform: translateY(-2px) scale(1.02); }
-  }
-
-  @keyframes reaction-rise {
-    0% { opacity: 0; transform: translateY(10px) scale(0.96); }
-    12% { opacity: 1; transform: translateY(0) scale(1); }
-    84% { opacity: 1; transform: translateY(-4px) scale(1); }
-    100% { opacity: 0; transform: translateY(-8px) scale(0.98); }
   }
 
   @media (prefers-color-scheme: dark) {
@@ -1105,7 +949,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .avatar-shell.speaking img,
-    .reaction-chip,
     .bubble.revealing::after {
       animation: none;
     }
@@ -1138,11 +981,6 @@
       min-width: 112px;
       min-height: 36px;
       width: auto;
-    }
-
-    .new-channel {
-      display: grid;
-      grid-template-columns: 1fr 1fr 40px;
     }
 
     .chat-area {
@@ -1188,18 +1026,12 @@
       grid-column: 1;
     }
 
-    .reaction-burst,
-    .composer,
-    .fallback {
+    .composer {
       grid-column: 1;
     }
 
     #messages li {
       max-width: 96%;
-    }
-
-    .reaction-label {
-      display: none;
     }
   }
 </style>
