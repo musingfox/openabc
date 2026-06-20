@@ -6,8 +6,8 @@
  *
  * Public API (frozen handle, load-bearing behaviors):
  *   createChannelStore(wsFactory) -> store
- *   store.addChannel(name, agentId?) -> channelId
- *   store.channel(id)             -> { id, name, agentId, socket, messages:[{id,from,text}] }
+ *   store.addChannel(name) -> channelId
+ *   store.channel(id)             -> { id, name, socket, messages:[{id,from,text}] }
  *   store.setActive(id)
  *   store.activeMessages()        -> messages of active channel only
  *   store.send(id, text)          -> calls channel's socket.send once; appends {id,from:'me',text}
@@ -70,21 +70,19 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
   let _activeId = null;
 
   /**
-   * Add a new channel, opening exactly one /native/ws connection for it.
+   * Add a new conversation, opening exactly one /native/ws connection for it.
    * The socket.onmessage is wired to the shared ingest fn — this is the SINGLE
    * onmessage registration point. App.svelte MUST NOT set its own onmessage.
    * @param {string} name
-   * @param {string} [agentId] — optional agent label to bind this channel to
    * @returns {string} channelId
    */
-  function addChannel(name, agentId) {
+  function addChannel(name) {
     const id = uid();
     const socket = wsFactory('/native/ws');
 
     const channel = {
       id,
       name,
-      agentId: agentId !== undefined ? agentId : null,
       socket,
       messages: [],
     };
@@ -149,8 +147,8 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
   function send(id, text) {
     const ch = _channels.get(id);
     if (!ch) return;
-    const frame = ch.agentId ? { text, agent: ch.agentId } : { text };
-    ch.socket.send(JSON.stringify(frame));
+    // Single-agent: every conversation talks to the one connected agent; no target_agent.
+    ch.socket.send(JSON.stringify({ text }));
     ch.messages = [...ch.messages, { id: uid(), from: 'me', text }];
   }
 
@@ -243,23 +241,6 @@ export function createChannelStore(wsFactory = (url) => new WebSocket(url)) {
     /** @returns {string|null} */
     get activeId() { return _activeId; },
   };
-}
-
-/**
- * Build the args array for store.addChannel from a name and optional agentId.
- * Returns [name, agentId] when agentId is non-empty and non-blank;
- * returns [name] when agentId is empty, blank, or not provided.
- * Designed to be spread: store.addChannel(...channelArgs(name, agentId)).
- *
- * @param {string} name
- * @param {string} [agentId]
- * @returns {[string] | [string, string]}
- */
-export function channelArgs(name, agentId) {
-  if (agentId !== undefined && typeof agentId === 'string' && agentId.trim() !== '') {
-    return [name, agentId];
-  }
-  return [name];
 }
 
 /**

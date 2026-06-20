@@ -12,7 +12,6 @@ import {
   agentDescriptor,
   OPENAB_ALIGNMENT_BLOCKERS,
 } from './membership.js';
-import { channelArgs } from './channels.js';
 
 // All tests use random channel ids to avoid cross-test contamination on the shared module store.
 
@@ -81,21 +80,6 @@ test('>=2 agents -> routingTargetFor returns null AND routingAmbiguous is true',
   addAgent(c, 'B');
   expect(routingTargetFor(c)).toBeNull();
   expect(routingAmbiguous(c)).toBe(true);
-});
-
-test('derived target is channelArgs-compatible (1 agent -> [name, id])', () => {
-  const c = 'mt-shape1-' + Math.random().toString(36).slice(2);
-  addAgent(c, 'agentA');
-  const t = routingTargetFor(c);
-  expect(typeof t).toBe('string');
-  expect(channelArgs('chan', t)).toEqual(['chan', 'agentA']);
-});
-
-test('derived target is channelArgs-compatible (0 agents -> [name])', () => {
-  const c = 'mt-shape0-' + Math.random().toString(36).slice(2);
-  const t = routingTargetFor(c);
-  expect(t === null || t === undefined).toBe(true);
-  expect(channelArgs('chan', t)).toEqual(['chan']);
 });
 
 // ─── OPENAB_LIMITS ───────────────────────────────────────────────────────────
