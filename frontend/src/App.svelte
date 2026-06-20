@@ -1,7 +1,7 @@
 <script>
   import { onDestroy, onMount } from 'svelte';
   import mermaid from 'mermaid';
-  import { stateToSrc, replyToState, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender } from './avatar.js';
+  import { stateToSrc, replyToState, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender, composeAgentState, voiceQueueReducer, shouldAutoplay, loadMutePref, saveMutePref } from './avatar.js';
   import { createChannelStore, ingestSocketMessage } from './channels.js';
 
   // ── Channel store ──────────────────────────────────────────────────────────
@@ -28,9 +28,31 @@
 
   // Active reveal timers: map from `${channelId}-${msgId}` to timer id.
   let revealTimers = {};
-  let soundEnabled = $state(false);
+  // Sound preference initialises from persisted mute pref (survives reload).
+  let soundEnabled = $state(loadMutePref());
   let activeVoiceId = $state(null);
   let voiceError = $state('');
+
+  // ── Voice playback queue ──────────────────────────────────────────────────
+  // Agent messages awaiting TTS playback, in FIFO order. Mutated only via the
+  // pure voiceQueueReducer. ttsSpeaking follows real audio start/stop and is the
+  // authority for the "speaking" sprite (composeAgentState), not the reply type.
+  let voiceQueue = $state([]);
+  let ttsSpeaking = $state(false);
+
+  // Injectable synth seam (default = window.speechSynthesis) so the playback
+  // wiring stays exercisable; pure decision logic lives in avatar.js.
+  function getSynth() {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return null;
+    if (typeof window.SpeechSynthesisUtterance === 'undefined') return null;
+    return window.speechSynthesis;
+  }
+
+  // Persistence helper that always targets the default (localStorage) store.
+  function persistSound(value) {
+    if (typeof window === 'undefined') return;
+    try { saveMutePref(window.localStorage, value); } catch { /* no-op */ }
+  }
 
   // Initialise mermaid once at startup.
   mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
@@ -66,6 +88,63 @@
         delete revealTimers[key];
       }
     }, REVEAL_INTERVAL_MS);
+  }
+
+  // ── Voice playback engine ─────────────────────────────────────────────────
+  // We self-manage the queue (head = currently playing / next to play) and do
+  // NOT rely on cancel-triggered onend to advance (browser semantics vary).
+
+  function enqueueVoice(message) {
+    if (!message || typeof message.text !== 'string' || message.text.length === 0) return;
+    voiceQueue = voiceQueueReducer(voiceQueue, {
+      type: 'enqueue',
+      item: { id: message.id, text: message.text },
+    });
+    startPlaybackIfIdle();
+  }
+
+  // Advance to the next queued item and play it. Plays only when nothing is
+  // currently speaking; the head of the queue is the item to play.
+  function startPlaybackIfIdle() {
+    if (ttsSpeaking) return;
+    speakHead();
+  }
+
+  function speakHead() {
+    const item = voiceQueue[0];
+    if (!item) { activeVoiceId = null; return; }
+
+    const synth = getSynth();
+    if (!synth) {
+      voiceError = '此瀏覽器不支援語音播放';
+      voiceQueue = voiceQueueReducer(voiceQueue, { type: 'clear' });
+      activeVoiceId = null;
+      return;
+    }
+
+    const utterance = new window.SpeechSynthesisUtterance(item.text);
+    utterance.lang = 'zh-TW';
+    activeVoiceId = item.id;
+    voiceError = '';
+
+    utterance.onstart = () => { ttsSpeaking = true; };
+    utterance.onend = () => {
+      ttsSpeaking = false;
+      // Dequeue the finished head and advance to the next item.
+      voiceQueue = voiceQueueReducer(voiceQueue, { type: 'dequeue' });
+      activeVoiceId = null;
+      speakHead();
+    };
+    utterance.onerror = () => {
+      ttsSpeaking = false;
+      voiceError = '語音播放失敗';
+      // One bad item must not wedge the rest of the queue.
+      voiceQueue = voiceQueueReducer(voiceQueue, { type: 'dequeue' });
+      activeVoiceId = null;
+      speakHead();
+    };
+
+    synth.speak(utterance);
   }
 
   function defaultChannelMeta() {
@@ -104,8 +183,9 @@
       let obj = null;
       try { obj = JSON.parse(event.data); } catch { return; }
 
-      // Drive avatar state machine (side-effect only; does not affect messages).
-      const agentState = replyToState(obj);
+      // Reaction-derived state (no longer the speaking authority; speaking now
+      // follows real TTS audio via composeAgentState at render time).
+      const reactionState = replyToState(obj);
       const prevMessages = store.channel(id).messages;
 
       // Route the raw frame through the shared ingest fn (production path, tested by probe).
@@ -114,17 +194,21 @@
       const next = store.channel(id).messages;
       channelList = store.channels(); // trigger reactivity
 
-      // Start streaming reveal for newly appended agent messages.
+      // Start streaming reveal for newly appended agent messages, and auto-play
+      // them when sound is on.
       if (next.length > prevMessages.length) {
         const newMsg = next[next.length - 1];
         if (newMsg.from === 'agent') {
           startReveal(id, newMsg.id, newMsg.text);
+          if (shouldAutoplay({ soundEnabled, isNewAgentMessage: true })) {
+            enqueueVoice(newMsg);
+          }
         }
       }
 
       channelMeta = {
         ...channelMeta,
-        [id]: { ...channelMeta[id], agentState },
+        [id]: { ...channelMeta[id], agentState: reactionState },
       };
     };
 
@@ -176,7 +260,7 @@
     newWs.onmessage = (event) => {
       let obj = null;
       try { obj = JSON.parse(event.data); } catch { /* ingest handles malformed */ }
-      const agentState = obj ? replyToState(obj) : (channelMeta[id]?.agentState ?? 'idle');
+      const reactionState = obj ? replyToState(obj) : (channelMeta[id]?.agentState ?? 'idle');
       const prevMessages = store.channel(id).messages;
 
       // Route through shared ingest (already wired, call again is idempotent for
@@ -187,9 +271,14 @@
       channelList = store.channels();
       if (next.length > prevMessages.length) {
         const newMsg = next[next.length - 1];
-        if (newMsg.from === 'agent') startReveal(id, newMsg.id, newMsg.text);
+        if (newMsg.from === 'agent') {
+          startReveal(id, newMsg.id, newMsg.text);
+          if (shouldAutoplay({ soundEnabled, isNewAgentMessage: true })) {
+            enqueueVoice(newMsg);
+          }
+        }
       }
-      channelMeta = { ...channelMeta, [id]: { ...channelMeta[id], agentState } };
+      channelMeta = { ...channelMeta, [id]: { ...channelMeta[id], agentState: reactionState } };
     };
 
     newWs.onerror = () => {};
@@ -218,6 +307,8 @@
 
   onDestroy(() => {
     Object.values(revealTimers).forEach(clearInterval);
+    voiceQueue = voiceQueueReducer(voiceQueue, { type: 'clear' });
+    ttsSpeaking = false;
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
@@ -244,7 +335,9 @@
     return store.activeMessages();
   });
   let activeMeta = $derived(activeChannelId ? (channelMeta[activeChannelId] ?? {}) : {});
-  let agentState = $derived(activeMeta.agentState ?? 'idle');
+  // Speaking follows real TTS audio (ttsSpeaking) and otherwise the reaction-
+  // derived state stored in channelMeta.agentState.
+  let agentState = $derived(composeAgentState({ ttsSpeaking, reactionState: activeMeta.agentState ?? 'idle' }));
   let connStatus = $derived(activeMeta.connStatus ?? 'connecting');
   let revealState = $derived(activeMeta.revealState ?? {});
   let activeAgentMessage = $derived([...activeMessages].reverse().find((m) => m.from === 'agent'));
@@ -302,40 +395,29 @@
 
   function toggleSound() {
     soundEnabled = !soundEnabled;
+    persistSound(soundEnabled);
     if (!soundEnabled) stopVoice();
   }
 
   function stopVoice() {
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
+    // Clear the whole queue and stop the synth; speaking ends immediately.
+    voiceQueue = voiceQueueReducer(voiceQueue, { type: 'clear' });
+    const synth = getSynth();
+    if (synth) synth.cancel();
+    ttsSpeaking = false;
     activeVoiceId = null;
     voiceError = '';
   }
 
+  // Manual replay of a single message: enqueue onto the shared queue so it plays
+  // in order (and starts immediately when idle). Preserves the replay-one UX.
   function replayVoice(message) {
     if (!message || !soundEnabled) return;
-    if (typeof window === 'undefined' || !window.speechSynthesis || typeof window.SpeechSynthesisUtterance === 'undefined') {
+    if (!getSynth()) {
       voiceError = '此瀏覽器不支援語音播放';
       return;
     }
-    window.speechSynthesis.cancel();
-    const utterance = new window.SpeechSynthesisUtterance(message.text);
-    utterance.lang = 'zh-TW';
-    activeVoiceId = message.id;
-    voiceError = '';
-    if (activeChannelId) {
-      channelMeta = {
-        ...channelMeta,
-        [activeChannelId]: { ...channelMeta[activeChannelId], agentState: 'speaking' },
-      };
-    }
-    utterance.onend = () => { activeVoiceId = null; };
-    utterance.onerror = () => {
-      activeVoiceId = null;
-      voiceError = '語音播放失敗';
-    };
-    window.speechSynthesis.speak(utterance);
+    enqueueVoice(message);
   }
 
   function onKey(e) {
