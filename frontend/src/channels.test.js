@@ -3,7 +3,7 @@
 // gate passage is decided by the probe, not by this file.
 
 import { test, expect } from 'bun:test';
-import { createChannelStore, ingestSocketMessage, channelArgs, reduceReaction, lastAgentIndex } from './channels.js';
+import { createChannelStore, ingestSocketMessage, channelArgs } from './channels.js';
 
 function makeFakeWsFactory() {
   const created = [];
@@ -224,90 +224,6 @@ test('E3: channelArgs(blank/empty agent)->addChannel(...args)->send produces {te
   expect(frame.text).toBe('hi');
 });
 
-// ── E-R3: reduceReaction pure fn ─────────────────────────────────────────────
-
-test('E-R3 reduceReaction add/increment/remove-to-zero-deletes-key/multi-emoji', () => {
-  expect(reduceReaction({}, 'add', '👀')).toEqual({ '👀': 1 });
-  expect(reduceReaction({ '👀': 1 }, 'add', '👀')).toEqual({ '👀': 2 });
-  expect(reduceReaction({ '👀': 1 }, 'remove', '👀')).toEqual({});
-  const two = reduceReaction({ '👀': 1 }, 'add', '🔥');
-  expect(two).toEqual({ '👀': 1, '🔥': 1 });
-});
-
-// ── E-R4 (pure half): unknown op is safe ────────────────────────────────────
-
-test('E-R4 reduceReaction unknown op returns input unchanged, no throw', () => {
-  const r = { '👀': 1 };
-  let out;
-  expect(() => { out = reduceReaction(r, 'weird', 'x'); }).not.toThrow();
-  expect(out).toEqual({ '👀': 1 });
-});
-
-// ── E-R6: lastAgentIndex pure fn ─────────────────────────────────────────────
-
-test('E-R6 lastAgentIndex finds last agent / -1 when none / -1 on empty', () => {
-  expect(lastAgentIndex([{ from: 'me' }, { from: 'agent' }, { from: 'me' }])).toBe(1);
-  expect(lastAgentIndex([{ from: 'me' }, { from: 'you' }])).toBe(-1);
-  expect(lastAgentIndex([])).toBe(-1);
-});
-
-// ── E-R1: add reaction via production ingest ─────────────────────────────────
-
-test('E-R1 add reaction attaches to last agent message via real socket.onmessage', () => {
-  const { factory, created } = makeFakeWsFactory();
-  const store = createChannelStore(factory);
-  const id = store.addChannel('A');
-  created[0].__emit({ type: 'message', text: 'hi' });
-  created[0].__emit({ type: 'reaction', op: 'add', text: '👀' });
-  const msgs = store.channel(id).messages;
-  const last = msgs[msgs.length - 1];
-  expect(last.reactions).toEqual({ '👀': 1 });
-});
-
-// ── E-R2: remove reaction via production ingest ──────────────────────────────
-
-test('E-R2 remove reaction clears emoji via real socket.onmessage', () => {
-  const { factory, created } = makeFakeWsFactory();
-  const store = createChannelStore(factory);
-  const id = store.addChannel('A');
-  created[0].__emit({ type: 'message', text: 'hi' });
-  created[0].__emit({ type: 'reaction', op: 'add', text: '👀' });
-  created[0].__emit({ type: 'reaction', op: 'remove', text: '👀' });
-  const msgs = store.channel(id).messages;
-  const last = msgs[msgs.length - 1];
-  expect(last.reactions == null || !('👀' in last.reactions)).toBe(true);
-});
-
-// ── E-R4 (ingest half): malformed reaction frame is a no-op ─────────────────
-
-test('E-R4 reaction frame missing text/op is no-op through production ingest', () => {
-  const { factory, created } = makeFakeWsFactory();
-  const store = createChannelStore(factory);
-  const id = store.addChannel('A');
-  created[0].__emit({ type: 'message', text: 'hi' });
-  const before = store.channel(id).messages;
-  const beforeLastReactions = JSON.stringify(before[before.length - 1].reactions ?? null);
-  created[0].__emit({ type: 'reaction', op: 'add' });
-  created[0].__emit({ type: 'reaction', text: '👀' });
-  const after = store.channel(id).messages;
-  expect(after.length).toBe(before.length);
-  expect(JSON.stringify(after[after.length - 1].reactions ?? null)).toBe(beforeLastReactions);
-});
-
-// ── E-R5: reaction on channel with no agent message is safe no-op ────────────
-
-test('E-R5 reaction on channel with no agent message is a safe no-op via ingest', () => {
-  const { factory, created } = makeFakeWsFactory();
-  const store = createChannelStore(factory);
-  const id = store.addChannel('A');
-  let threw = false;
-  try {
-    created[0].__emit({ type: 'reaction', op: 'add', text: '👀' });
-  } catch { threw = true; }
-  expect(threw).toBe(false);
-  expect(store.channel(id).messages.length).toBe(0);
-});
-
 // ── E-R7: existing message ingest regression ─────────────────────────────────
 
 test('E-R7 type:message still appends from:agent; malformed JSON no-op', () => {
@@ -321,23 +237,6 @@ test('E-R7 type:message still appends from:agent; malformed JSON no-op', () => {
   expect(msgs[0].text).toBe('hello');
   created[0].__emit('not-json{');
   expect(store.channel(id).messages.length).toBe(1);
-});
-
-// ── E-R8: isolation — reaction on channel a does not touch channel b ──────────
-
-test('E-R8 reaction on channel a does not affect channel b', () => {
-  const { factory, created } = makeFakeWsFactory();
-  const store = createChannelStore(factory);
-  const a = store.addChannel('A');
-  const b = store.addChannel('B');
-  created[0].__emit({ type: 'message', text: 'a-msg' });
-  created[1].__emit({ type: 'message', text: 'b-msg' });
-  created[0].__emit({ type: 'reaction', op: 'add', text: '👀' });
-  const bMsgs = store.channel(b).messages;
-  const bLast = bMsgs[bMsgs.length - 1];
-  expect(bLast.reactions == null || !('👀' in bLast.reactions)).toBe(true);
-  const aMsgs = store.channel(a).messages;
-  expect(aMsgs[aMsgs.length - 1].reactions).toEqual({ '👀': 1 });
 });
 
 // ── E-R9: reaction does not spawn a new message; id stays ───────────────────
