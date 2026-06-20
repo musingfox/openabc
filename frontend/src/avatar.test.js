@@ -1,6 +1,15 @@
 // Unit tests for stateToSrc, replyToState, revealText, isRevealComplete.
 // Compatible with `bun test` (Bun built-in) and `node --test` (node:test).
-import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender } from './avatar.js';
+import { stateToSrc, replyToState, reduceMessages, nextBackoff, revealText, isRevealComplete, scrollTopToBottom, renderRich, shouldRenderRich, splitRevealedForRender, composeAgentState, voiceQueueReducer, shouldAutoplay, loadMutePref, saveMutePref } from './avatar.js';
+
+// In-memory fake storage mirroring localStorage's getItem/setItem contract.
+function makeFakeStorage() {
+  const map = new Map();
+  return {
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => { map.set(k, String(v)); },
+  };
+}
 
 // Detect runner: bun vs node:test
 const isBun = typeof Bun !== 'undefined';
@@ -536,6 +545,103 @@ if (isBun) {
       expect(out.plainTail).toContain('$y');
     });
   });
+
+  describe('composeAgentState (M2)', () => {
+    it('ttsSpeaking true => speaking regardless of reactionState', () => {
+      expect(composeAgentState({ ttsSpeaking: true, reactionState: 'idle' })).toBe('speaking');
+    });
+    it('ttsSpeaking false => reactionState passthrough', () => {
+      expect(composeAgentState({ ttsSpeaking: false, reactionState: 'thinking' })).toBe('thinking');
+    });
+    it('ttsSpeaking false, idle => idle', () => {
+      expect(composeAgentState({ ttsSpeaking: false, reactionState: 'idle' })).toBe('idle');
+    });
+    it('non-boolean ttsSpeaking + bogus reactionState => idle', () => {
+      expect(composeAgentState({ ttsSpeaking: 'yes', reactionState: 'bogus' })).toBe('idle');
+    });
+    it('never throws on empty input', () => {
+      expect(() => composeAgentState()).not.toThrow();
+      expect(composeAgentState()).toBe('idle');
+    });
+  });
+
+  describe('voiceQueueReducer (M2)', () => {
+    it('enqueue appends item', () => {
+      expect(voiceQueueReducer([], { type: 'enqueue', item: { id: 'a', text: 'x' } }))
+        .toEqual([{ id: 'a', text: 'x' }]);
+    });
+    it('dequeue removes head', () => {
+      expect(voiceQueueReducer([{ id: 'a' }, { id: 'b' }], { type: 'dequeue' }))
+        .toEqual([{ id: 'b' }]);
+    });
+    it('dequeue on empty is a no-op', () => {
+      expect(voiceQueueReducer([], { type: 'dequeue' })).toEqual([]);
+    });
+    it('clear empties the queue', () => {
+      expect(voiceQueueReducer([{ id: 'a' }], { type: 'clear' })).toEqual([]);
+    });
+    it('unknown action returns state unchanged', () => {
+      expect(voiceQueueReducer([{ id: 'a' }], { type: 'wat' })).toEqual([{ id: 'a' }]);
+    });
+    it('enqueue with missing item returns state unchanged', () => {
+      expect(voiceQueueReducer([{ id: 'a' }], { type: 'enqueue' })).toEqual([{ id: 'a' }]);
+    });
+    it('does not mutate the input array', () => {
+      const input = [{ id: 'a' }];
+      voiceQueueReducer(input, { type: 'enqueue', item: { id: 'b' } });
+      voiceQueueReducer(input, { type: 'dequeue' });
+      voiceQueueReducer(input, { type: 'clear' });
+      expect(input).toEqual([{ id: 'a' }]);
+    });
+  });
+
+  describe('shouldAutoplay (M2)', () => {
+    it('both true => true', () => {
+      expect(shouldAutoplay({ soundEnabled: true, isNewAgentMessage: true })).toBe(true);
+    });
+    it('sound off => false', () => {
+      expect(shouldAutoplay({ soundEnabled: false, isNewAgentMessage: true })).toBe(false);
+    });
+    it('not new => false', () => {
+      expect(shouldAutoplay({ soundEnabled: true, isNewAgentMessage: false })).toBe(false);
+    });
+    it('non-boolean => false', () => {
+      expect(shouldAutoplay({ soundEnabled: undefined, isNewAgentMessage: true })).toBe(false);
+    });
+    it('never throws on empty input', () => {
+      expect(() => shouldAutoplay()).not.toThrow();
+      expect(shouldAutoplay()).toBe(false);
+    });
+  });
+
+  describe('loadMutePref / saveMutePref (M2)', () => {
+    it('absent key => false', () => {
+      expect(loadMutePref({ getItem: () => null })).toBe(false);
+    });
+    it('stored "true" => true', () => {
+      expect(loadMutePref({ getItem: () => 'true' })).toBe(true);
+    });
+    it('getItem throws => false', () => {
+      expect(loadMutePref({ getItem: () => { throw new Error('boom'); } })).toBe(false);
+    });
+    it('missing storage => false', () => {
+      expect(loadMutePref(null)).toBe(false);
+      expect(loadMutePref({})).toBe(false);
+    });
+    it('save then load round-trips true on shared storage', () => {
+      const fake = makeFakeStorage();
+      saveMutePref(fake, true);
+      expect(loadMutePref(fake)).toBe(true);
+    });
+    it('save false then load => false', () => {
+      const fake = makeFakeStorage();
+      saveMutePref(fake, false);
+      expect(loadMutePref(fake)).toBe(false);
+    });
+    it('setItem throws => no throw, returns undefined', () => {
+      expect(saveMutePref({ setItem: () => { throw new Error('boom'); } }, true)).toBe(undefined);
+    });
+  });
 } else {
   // node:test path
   const { describe, it } = await import('node:test');
@@ -1049,6 +1155,105 @@ if (isBun) {
       const out = splitRevealedForRender('a $x$ b $y');
       assert.default.strictEqual(out.richHtml, renderRich('a $x$ b '));
       assert.default.ok(out.plainTail.includes('$y'));
+    });
+  });
+
+  describe('composeAgentState (M2)', () => {
+    it('ttsSpeaking true => speaking regardless of reactionState', () => {
+      assert.default.strictEqual(composeAgentState({ ttsSpeaking: true, reactionState: 'idle' }), 'speaking');
+    });
+    it('ttsSpeaking false => reactionState passthrough', () => {
+      assert.default.strictEqual(composeAgentState({ ttsSpeaking: false, reactionState: 'thinking' }), 'thinking');
+    });
+    it('ttsSpeaking false, idle => idle', () => {
+      assert.default.strictEqual(composeAgentState({ ttsSpeaking: false, reactionState: 'idle' }), 'idle');
+    });
+    it('non-boolean ttsSpeaking + bogus reactionState => idle', () => {
+      assert.default.strictEqual(composeAgentState({ ttsSpeaking: 'yes', reactionState: 'bogus' }), 'idle');
+    });
+    it('never throws on empty input', () => {
+      assert.default.doesNotThrow(() => composeAgentState());
+      assert.default.strictEqual(composeAgentState(), 'idle');
+    });
+  });
+
+  describe('voiceQueueReducer (M2)', () => {
+    it('enqueue appends item', () => {
+      assert.default.deepStrictEqual(
+        voiceQueueReducer([], { type: 'enqueue', item: { id: 'a', text: 'x' } }),
+        [{ id: 'a', text: 'x' }]);
+    });
+    it('dequeue removes head', () => {
+      assert.default.deepStrictEqual(
+        voiceQueueReducer([{ id: 'a' }, { id: 'b' }], { type: 'dequeue' }),
+        [{ id: 'b' }]);
+    });
+    it('dequeue on empty is a no-op', () => {
+      assert.default.deepStrictEqual(voiceQueueReducer([], { type: 'dequeue' }), []);
+    });
+    it('clear empties the queue', () => {
+      assert.default.deepStrictEqual(voiceQueueReducer([{ id: 'a' }], { type: 'clear' }), []);
+    });
+    it('unknown action returns state unchanged', () => {
+      assert.default.deepStrictEqual(voiceQueueReducer([{ id: 'a' }], { type: 'wat' }), [{ id: 'a' }]);
+    });
+    it('enqueue with missing item returns state unchanged', () => {
+      assert.default.deepStrictEqual(voiceQueueReducer([{ id: 'a' }], { type: 'enqueue' }), [{ id: 'a' }]);
+    });
+    it('does not mutate the input array', () => {
+      const input = [{ id: 'a' }];
+      voiceQueueReducer(input, { type: 'enqueue', item: { id: 'b' } });
+      voiceQueueReducer(input, { type: 'dequeue' });
+      voiceQueueReducer(input, { type: 'clear' });
+      assert.default.deepStrictEqual(input, [{ id: 'a' }]);
+    });
+  });
+
+  describe('shouldAutoplay (M2)', () => {
+    it('both true => true', () => {
+      assert.default.strictEqual(shouldAutoplay({ soundEnabled: true, isNewAgentMessage: true }), true);
+    });
+    it('sound off => false', () => {
+      assert.default.strictEqual(shouldAutoplay({ soundEnabled: false, isNewAgentMessage: true }), false);
+    });
+    it('not new => false', () => {
+      assert.default.strictEqual(shouldAutoplay({ soundEnabled: true, isNewAgentMessage: false }), false);
+    });
+    it('non-boolean => false', () => {
+      assert.default.strictEqual(shouldAutoplay({ soundEnabled: undefined, isNewAgentMessage: true }), false);
+    });
+    it('never throws on empty input', () => {
+      assert.default.doesNotThrow(() => shouldAutoplay());
+      assert.default.strictEqual(shouldAutoplay(), false);
+    });
+  });
+
+  describe('loadMutePref / saveMutePref (M2)', () => {
+    it('absent key => false', () => {
+      assert.default.strictEqual(loadMutePref({ getItem: () => null }), false);
+    });
+    it('stored "true" => true', () => {
+      assert.default.strictEqual(loadMutePref({ getItem: () => 'true' }), true);
+    });
+    it('getItem throws => false', () => {
+      assert.default.strictEqual(loadMutePref({ getItem: () => { throw new Error('boom'); } }), false);
+    });
+    it('missing storage => false', () => {
+      assert.default.strictEqual(loadMutePref(null), false);
+      assert.default.strictEqual(loadMutePref({}), false);
+    });
+    it('save then load round-trips true on shared storage', () => {
+      const fake = makeFakeStorage();
+      saveMutePref(fake, true);
+      assert.default.strictEqual(loadMutePref(fake), true);
+    });
+    it('save false then load => false', () => {
+      const fake = makeFakeStorage();
+      saveMutePref(fake, false);
+      assert.default.strictEqual(loadMutePref(fake), false);
+    });
+    it('setItem throws => no throw, returns undefined', () => {
+      assert.default.strictEqual(saveMutePref({ setItem: () => { throw new Error('boom'); } }, true), undefined);
     });
   });
 }

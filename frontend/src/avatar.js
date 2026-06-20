@@ -433,6 +433,107 @@ export function shouldRenderRich(isComplete) {
 }
 
 /**
+ * Pure precedence: derive the displayed agent state from TTS audio status
+ * and the reaction-derived state. Audio actually playing wins ('speaking');
+ * otherwise the reactionState is clamped to a known sprite state, falling
+ * back to 'idle'. Never throws.
+ *
+ * @param {{ttsSpeaking: boolean, reactionState: string}} opts
+ * @returns {string} one of idle|speaking|listening|thinking
+ */
+export function composeAgentState({ ttsSpeaking, reactionState } = {}) {
+  if (ttsSpeaking === true) return 'speaking';
+  return STATE_MAP[reactionState] ? reactionState : 'idle';
+}
+
+/**
+ * Pure FIFO reducer for the voice playback queue.
+ * - enqueue: append action.item (no-op when item is missing).
+ * - dequeue: remove head (no-op on empty).
+ * - clear: return [].
+ * - unknown / invalid action: return state unchanged.
+ * Never mutates its input.
+ *
+ * @param {Array<{id?:string,text?:string}>} state
+ * @param {{type:string, item?:object}} action
+ * @returns {Array} new (or same) queue array
+ */
+export function voiceQueueReducer(state, action) {
+  const queue = Array.isArray(state) ? state : [];
+  if (!action || typeof action.type !== 'string') return queue;
+  switch (action.type) {
+    case 'enqueue':
+      if (action.item == null) return queue;
+      return [...queue, action.item];
+    case 'dequeue':
+      return queue.length === 0 ? queue : queue.slice(1);
+    case 'clear':
+      return [];
+    default:
+      return queue;
+  }
+}
+
+/**
+ * Pure auto-play gate: speak a freshly arrived agent message only when sound
+ * is on and the message is genuinely new. Both inputs must be strictly true.
+ * Non-boolean inputs are treated as false; never throws.
+ *
+ * @param {{soundEnabled: boolean, isNewAgentMessage: boolean}} opts
+ * @returns {boolean}
+ */
+export function shouldAutoplay({ soundEnabled, isNewAgentMessage } = {}) {
+  return soundEnabled === true && isNewAgentMessage === true;
+}
+
+// Fixed localStorage key for the mute/sound preference. Once shipped this key
+// is a compatibility surface across reloads — do not rename casually.
+const MUTE_PREF_KEY = 'openabc.sound';
+
+function defaultStorage() {
+  if (typeof window === 'undefined') return undefined;
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Load the persisted sound preference. Returns the stored boolean, or false
+ * when absent, unparseable, or when storage is unavailable / throws.
+ *
+ * @param {{getItem: Function}} [storage] - injected store (default localStorage)
+ * @returns {boolean}
+ */
+export function loadMutePref(storage = defaultStorage()) {
+  try {
+    if (!storage || typeof storage.getItem !== 'function') return false;
+    const raw = storage.getItem(MUTE_PREF_KEY);
+    return raw === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persist the sound preference under a fixed key. Silent no-op when storage is
+ * unavailable or setItem throws (private mode, no window).
+ *
+ * @param {{setItem: Function}} storage - injected store (default localStorage)
+ * @param {boolean} value
+ * @returns {void}
+ */
+export function saveMutePref(storage = defaultStorage(), value) {
+  try {
+    if (!storage || typeof storage.setItem !== 'function') return;
+    storage.setItem(MUTE_PREF_KEY, value === true ? 'true' : 'false');
+  } catch {
+    /* silent no-op */
+  }
+}
+
+/**
  * Pure: reconnect backoff delay (ms) for a 0-based retry index.
  * Exponential from BASE, doubling per attempt, capped at MAX.
  * Negative / non-finite input is treated as attempt 0.
